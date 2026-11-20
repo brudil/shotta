@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Fixture</title>
+    <style>
+      body { font: 16px/1.5 system-ui, sans-serif; margin: 24px; }
+      #details { opacity: 0; transition: opacity 300ms ease; }
+      #details.open { opacity: 1; }
+      #dev-overlay { position: fixed; top: 0; right: 0; background: red; color: #fff; padding: 8px; }
+      .tall { height: 1400px; }
+      html[data-theme=dark] body { background: #111827; color: #f9fafb; }
+    </style>
+  </head>
+  <body>
+    <h1>Fixture</h1>
+    <div id="dev-overlay">DEV TOOLS</div>
+    <label>Name <input id="name" /></label>
+    <button id="toggle" type="button">Show details</button>
+    <p id="details">The details are showing.</p>
+    <ul id="items" aria-busy="true"></ul>
+    <a id="about" href="/about.html">About</a>
+    <div class="tall"></div>
+    <p id="footer">The end.</p>
+    <script>
+      document.documentElement.dataset.mock = localStorage.getItem('mock') ?? 'off';
+      document.getElementById('toggle').addEventListener('click', () => {
+        document.getElementById('details').classList.add('open');
+      });
+      fetch('/api/items').then((r) => r.json()).then((items) => {
+        const list = document.getElementById('items');
+        for (const item of items) {
+          const li = document.createElement('li');
+          li.textContent = item;
+          list.append(li);
+        }
+        list.removeAttribute('aria-busy');
+      });
+      fetch('/api/ping').catch(() => {});
+    </script>
+  </body>
+</html>

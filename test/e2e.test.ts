@@ -1,0 +1,423 @@
+/**
+ * Runs the built CLI against the fixture site, the way a project would: a
+ * TypeScript config and flows, loaded by Node, importing the package by name.
+ */
+import { spawn, spawnSync } from 'node:child_process';
+import { existsSync, readFileSync, rmSync } from 'node:fs';
+import { createServer } from 'node:net';
+import path from 'node:path';
+
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+
+import type { FlowSummary, RunResult } from '../src/index.js';
+
+const fixture = path.join(import.meta.dirname, 'fixture');
+const cli = path.join(import.meta.dirname, '..', 'dist', 'cli.js');
+
+interface Outcome {
+  status: number | null;
+  stdout: string;
+  stderr: string;
+}
+
+function shotsWith(input: string | undefined, ...args: string[]): Outcome {
+  const { status, stdout, stderr } = spawnSync('node', [cli, ...args], {
+    cwd: fixture,
+    encoding: 'utf8',
+    input,
+  });
+  return { status, stdout, stderr };
+}
+
+const shots = (...args: string[]): Outcome => shotsWith(undefined, ...args);
+
+const relative = (file: string): string =>
+  path.relative(path.join(fixture, '.shots'), file);
+
+const sleep = (ms: number): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, ms));
+
+beforeAll(() => {
+  rmSync(path.join(fixture, '.shots'), { recursive: true, force: true });
+  rmSync(path.join(fixture, '.shots-idle'), { recursive: true, force: true });
+  rmSync(path.join(fixture, '.shots-url'), { recursive: true, force: true });
+});
+
+// Runs leave the app up for each other; the suite must not leave it behind.
+afterAll(() => {
+  shots('stop');
+  shots('stop', '--config', 'idle.config.ts');
+});
+
+describe('shots list', () => {
+  it('is a catalog: each flow, what it shows, where it goes, what it shoots', () => {
+    const { status, stdout } = shots('list', '--json');
+    const flows: FlowSummary[] = JSON.parse(stdout);
+
+    expect(status).toBe(0);
+    expect(flows.map((flow) => flow.name)).toEqual([
+      'crashed',
+      'journey',
+      'missing-target',
+      'still',
+    ]);
+    expect(flows[1]).toMatchObject({
+      shows: 'The home page, its details panel, and the way through to About',
+      routes: ['/'],
+      chapters: ['Fill in the form', 'Read the small print'],
+      shots: [
+        { name: 'home', shows: 'The list has loaded: Alpha, Beta, Gamma' },
+        { name: 'details', shows: null },
+        { name: 'about', shows: null },
+      ],
+    });
+  });
+
+  it('narrows to the flows that go to a route', () => {
+    const { stdout } = shots('list', '--route', '/about', '--json');
+    const flows: FlowSummary[] = JSON.parse(stdout);
+
+    expect(flows.map((flow) => flow.name)).toEqual(['still']);
+  });
+
+  it('narrows to the flows nearest a source file', () => {
+    const { stdout } = shots('list', '--near', 'shots/helpers/x.ts', '--json');
+    const flows: FlowSummary[] = JSON.parse(stdout);
+
+    expect(flows).toHaveLength(4);
+    expect(shots('list', '--near', 'site/index.html').status).toBe(2);
+  });
+});
+
+describe('shots', () => {
+  it('shoots a journey at every profile, with a storyboard and a video', () => {
+    const { status, stdout, stderr } = shots('journey', '--json');
+    const result: RunResult = JSON.parse(stdout);
+
+    expect(stderr).not.toContain('never went quiet');
+    expect(status).toBe(0);
+    expect(result.ok).toBe(true);
+    expect(result.passes.map((pass) => pass.profile)).toEqual([
+      'desktop',
+      'phone',
+    ]);
+    for (const pass of result.passes) {
+      const dir = `review/journey/${pass.profile}`;
+      expect(pass.failure).toBeNull();
+      expect(pass.shots.map((shot) => relative(shot.file))).toEqual([
+        `${dir}/01-home.png`,
+        `${dir}/fill-in-the-form/02-details.png`,
+        `${dir}/read-the-small-print/03-about.png`,
+      ]);
+      expect(pass.shots[0]?.shows).toBe(
+        'The list has loaded: Alpha, Beta, Gamma',
+      );
+      for (const shot of pass.shots) expect(existsSync(shot.file)).toBe(true);
+      expect(relative(pass.video ?? '')).toBe(`${dir}/journey.webm`);
+      expect(existsSync(pass.video ?? '')).toBe(true);
+      expect(pass.storyboard.map(relative)).toEqual([`${dir}/storyboard.png`]);
+      expect(existsSync(pass.storyboard[0] ?? '')).toBe(true);
+    }
+    // The same report is left on disk, one file per run.
+    expect(relative(result.report)).toMatch(/^review\/runs\/.+\.json$/);
+    expect(JSON.parse(readFileSync(result.report, 'utf8'))).toEqual(result);
+  });
+
+  it('records no video for a flow that only loads a route and shoots it', () => {
+    const { status, stdout } = shots('still@desktop', '--json');
+    const result: RunResult = JSON.parse(stdout);
+
+    expect(status).toBe(0);
+    expect(result.passes).toHaveLength(1);
+    expect(result.passes[0]?.shots).toHaveLength(1);
+    expect(result.passes[0]?.video).toBeNull();
+    expect(result.passes[0]?.storyboard).toEqual([]);
+  });
+
+  it('runs a flow only as far as the shot asked for', () => {
+    const { status, stdout } = shots(
+      'journey/home@desktop',
+      '--no-video',
+      '--json',
+    );
+    const result: RunResult = JSON.parse(stdout);
+
+    expect(status).toBe(0);
+    expect(result.passes).toHaveLength(1);
+    expect(result.passes[0]?.shots.map((shot) => shot.name)).toEqual(['home']);
+  });
+
+  it('reports the step that failed, with a screenshot, and exits 1', () => {
+    const { status, stdout, stderr } = shots(
+      'missing-target@desktop',
+      '--no-video',
+      '--json',
+    );
+    const result: RunResult = JSON.parse(stdout);
+    const pass = result.passes[0];
+
+    expect(status).toBe(1);
+    expect(result.ok).toBe(false);
+    expect(pass?.shots.map((shot) => shot.name)).toEqual(['before']);
+    expect(pass?.failure).toMatchObject({
+      step: 3,
+      action: 'click #nope',
+      chapter: 'Press a button that is not there',
+    });
+    expect(existsSync(pass?.failure?.screenshot ?? '')).toBe(true);
+    // The page as a selector sees it, so the flow can be fixed without the image.
+    const aria = readFileSync(pass?.failure?.aria ?? '', 'utf8');
+    expect(aria).toContain('- heading "Fixture"');
+    expect(aria).toContain('- button "Show details"');
+    // Only the app: not the caption shots draws over it.
+    expect(aria).not.toContain('Press a button that is not there');
+    expect(pass?.failure?.message).toBe(
+      "locator.click: Timeout 1500ms exceeded.\nCall log:\n  - waiting for locator('#nope').first()",
+    );
+    expect(stderr).toContain('missing-target (step 3: click #nope)');
+  });
+
+  it('fails a flow that lands on a failWhen condition, with the console errors', () => {
+    const { status, stdout } = shots('crashed@desktop', '--json');
+    const result: RunResult = JSON.parse(stdout);
+    const pass = result.passes[0];
+
+    expect(status).toBe(1);
+    expect(pass?.failure?.message).toBe('the app error page rendered');
+    expect(pass?.failure?.url).toMatch(/\/crashed\.html$/);
+    expect(pass?.consoleErrors).toContain('render failed: items is undefined');
+    expect(pass?.shots).toEqual([]);
+  });
+
+  it('exits 2 when a target matches nothing, before starting anything', () => {
+    const { status, stderr } = shots('no-such-flow');
+
+    expect(status).toBe(2);
+    expect(stderr).toContain('no flow matches: no-such-flow');
+  });
+
+  it('exits 2 on a shot the flow does not take, naming the ones it does', () => {
+    const { status, stderr } = shots('journey/checkout');
+
+    expect(status).toBe(2);
+    expect(stderr).toContain(
+      'journey has no shot called checkout (have: home, details, about)',
+    );
+  });
+});
+
+describe('shots --agent', () => {
+  it('prints only the report: 1x shots in tiles, kept apart from review output', () => {
+    const { status, stdout, stderr } = shots('journey@desktop', '--agent');
+    const result: RunResult = JSON.parse(stdout);
+    const pass = result.passes[0];
+    const dir = 'agent/journey/desktop';
+
+    expect(status).toBe(0);
+    expect(stderr).toBe('');
+    expect(pass?.video).toBeNull();
+    expect(pass?.storyboard.map(relative)).toEqual([`${dir}/storyboard.png`]);
+    // The home page is taller than a tile; the about page is not.
+    expect(pass?.shots.map((shot) => shot.tiles.map(relative))).toEqual([
+      [`${dir}/01-home.1.png`, `${dir}/01-home.2.png`],
+      [
+        `${dir}/fill-in-the-form/02-details.1.png`,
+        `${dir}/fill-in-the-form/02-details.2.png`,
+      ],
+      [`${dir}/read-the-small-print/03-about.png`],
+    ]);
+    for (const shot of pass?.shots ?? []) {
+      for (const tile of shot.tiles) expect(existsSync(tile)).toBe(true);
+    }
+    // What the earlier, full-size run wrote for a person is still there.
+    expect(
+      existsSync(
+        path.join(fixture, '.shots/review/journey/phone/journey.webm'),
+      ),
+    ).toBe(true);
+  });
+
+  it('runs several targets side by side and reports them in a stable order', () => {
+    const { status, stdout } = shots(
+      'still',
+      'journey/details@phone',
+      'crashed@desktop',
+      'journey/home@desktop',
+      '--agent',
+      '--workers',
+      '4',
+    );
+    const result: RunResult = JSON.parse(stdout);
+
+    expect(status).toBe(1);
+    expect(
+      result.passes.map(
+        (pass) =>
+          `${pass.flow}@${pass.profile} ${pass.shots.length} ${pass.ok}`,
+      ),
+    ).toEqual([
+      'crashed@desktop 0 false',
+      'journey@desktop 1 true',
+      'journey@phone 2 true',
+      'still@desktop 1 true',
+      'still@phone 1 true',
+    ]);
+  });
+});
+
+describe('shots snap', () => {
+  it('shoots routes without a flow file, naming each shot for its route', () => {
+    const { status, stdout } = shots(
+      'snap',
+      '/',
+      '/about.html',
+      '--profiles',
+      'desktop',
+      '--json',
+    );
+    const result: RunResult = JSON.parse(stdout);
+    const pass = result.passes[0];
+
+    expect(status).toBe(0);
+    expect(pass?.flow).toBe('snap');
+    expect(pass?.video).toBeNull();
+    expect(pass?.shots.map((shot) => relative(shot.file))).toEqual([
+      'review/snap/desktop/01-index.png',
+      'review/snap/desktop/02-about-html.png',
+    ]);
+  });
+
+  it('runs steps given as JSON on stdin, project steps included', () => {
+    const steps = [
+      { goto: '/' },
+      { theme: 'dark' },
+      { annotate: 'Open the details', steps: [{ click: '#toggle' }] },
+      { wait: '#details.open' },
+      { shot: 'open', shows: 'The details paragraph is visible' },
+    ];
+    const { status, stdout } = shotsWith(
+      JSON.stringify(steps),
+      'snap',
+      '--steps',
+      '-',
+      '--name',
+      'details',
+      '--profiles',
+      'phone',
+      '--json',
+    );
+    const result: RunResult = JSON.parse(stdout);
+
+    expect(status).toBe(0);
+    expect(result.passes[0]?.shots.map((shot) => relative(shot.file))).toEqual([
+      'review/details/phone/01-open.png',
+    ]);
+  });
+
+  it('exits 2 on steps that are not steps, saying which', () => {
+    const { status, stderr } = shots(
+      'snap',
+      '--steps',
+      '[{"goto":"/"},{"clik":"#toggle"}]',
+    );
+
+    expect(status).toBe(2);
+    expect(stderr).toContain('steps[1]: not a step: {"clik":"#toggle"}');
+    expect(stderr).toContain('theme');
+  });
+});
+
+describe('the app server', () => {
+  const origin = (result: RunResult): string =>
+    new URL(result.passes[0]?.failure?.url ?? '').origin;
+  const crashed = (...args: string[]): RunResult =>
+    JSON.parse(shots('crashed@desktop', '--json', ...args).stdout);
+
+  it('is left up by one run and used by the next, until stopped', () => {
+    const first = crashed();
+    const second = crashed();
+    expect(origin(second)).toBe(origin(first));
+
+    expect(shots('stop').stdout).toContain('stopped the app');
+    expect(shots('stop').stdout).toContain('no app was running');
+
+    const third = crashed();
+    expect(origin(third)).not.toBe(origin(first));
+  });
+
+  it('stops by itself once no run has used it for a while', async () => {
+    const state = path.join(fixture, '.shots-idle', 'server.json');
+    const first = crashed('--config', 'idle.config.ts');
+    expect(existsSync(state)).toBe(true);
+    const keeper: number = JSON.parse(readFileSync(state, 'utf8')).keeper;
+
+    await sleep(4000);
+
+    expect(existsSync(state)).toBe(false);
+    expect(() => process.kill(keeper, 0)).toThrow();
+    // And it is no longer answering.
+    await expect(fetch(origin(first))).rejects.toThrow();
+  });
+});
+
+describe('shots --base-url', () => {
+  const freePort = (): Promise<number> =>
+    new Promise((resolve) => {
+      const probe = createServer();
+      probe.listen(0, '127.0.0.1', () => {
+        const { port } = probe.address() as { port: number };
+        probe.close(() => resolve(port));
+      });
+    });
+
+  it('runs against the app it is given and manages none of its own', async () => {
+    const port = await freePort();
+    const url = `http://127.0.0.1:${port}`;
+    const app = spawn('node', ['server.mjs'], {
+      cwd: fixture,
+      env: { ...process.env, PORT: String(port) },
+      stdio: 'ignore',
+    });
+    try {
+      for (let tries = 0; tries < 40; tries += 1) {
+        if (
+          await fetch(url).then(
+            () => true,
+            () => false,
+          )
+        )
+          break;
+        await sleep(100);
+      }
+      const { status, stdout, stderr } = shots(
+        'crashed@desktop',
+        '--base-url',
+        url,
+        '--out',
+        '.shots-url',
+        '--json',
+      );
+      const result: RunResult = JSON.parse(stdout);
+
+      expect(status).toBe(1);
+      expect(new URL(result.passes[0]?.failure?.url ?? '').origin).toBe(url);
+      // Nothing was started, so nothing was left up or written down.
+      expect(stderr).not.toContain('starting');
+      expect(existsSync(path.join(fixture, '.shots-url/server.json'))).toBe(
+        false,
+      );
+      // The app is the caller's: still up after the run.
+      expect((await fetch(url)).ok).toBe(true);
+    } finally {
+      app.kill();
+    }
+  });
+
+  it('exits 2 when nothing answers there, before running anything', async () => {
+    const url = `http://127.0.0.1:${await freePort()}`;
+    const { status, stderr } = shots('still', '--base-url', url);
+
+    expect(status).toBe(2);
+    expect(stderr).toContain(`nothing answers at ${url}`);
+  });
+});
