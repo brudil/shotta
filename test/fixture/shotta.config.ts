@@ -41,7 +41,17 @@ export default defineConfig({
     },
     hero: {
       dir: '.shotta-exported',
-      shots: { 'hero.png': 'still/fold@phone' },
+      // A file is what its name says it is.
+      shots: {
+        'hero.png': 'still/fold@phone',
+        'hero.jpg': 'still/fold@desktop',
+      },
+    },
+    web: {
+      dir: '.shotta-exported/web',
+      format: 'webp',
+      quality: 80,
+      shots: ['still/fold@desktop'],
     },
   },
   failWhen: [

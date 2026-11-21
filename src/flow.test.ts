@@ -201,6 +201,18 @@ describe('what a shot is of', () => {
     );
   });
 
+  it('can take some of the page around an element, and only around one', () => {
+    expect(() =>
+      checkSteps([{ shot: 'card', of: '#card', pad: 24 }]),
+    ).not.toThrow();
+    expect(() => checkSteps([{ shot: 'a', pad: 24 }])).toThrow(
+      'steps[0]: pad is the page around an element: it needs "of"',
+    );
+    expect(() => checkSteps([{ shot: 'a', of: '#a', pad: -1 }])).toThrow(
+      'steps[0]: pad takes a number of pixels, 0 or more',
+    );
+  });
+
   it('has a name no other shot in the flow has, since it is its address', () => {
     expect(() =>
       checkSteps([

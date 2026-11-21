@@ -16,6 +16,7 @@
       /* The padding lets the last row be scrolled up the screen, and grows
          with the viewport: a shot keeps a little of it, not all. */
       main { flex: 1; overflow: auto; padding-bottom: 40vh; }
+      #rows { margin: 0 20px; }
       .row { height: 60px; box-sizing: border-box; border-bottom: 1px solid #ddd; padding: 16px; }
     </style>
   </head>
@@ -23,9 +24,9 @@
     <nav>
       <div id="log"><div>Log</div></div>
     </nav>
-    <main id="list"></main>
+    <main id="list"><div id="rows"></div></main>
     <script>
-      const list = document.getElementById('list');
+      const list = document.getElementById('rows');
       for (let n = 1; n <= 30; n += 1) {
         const row = document.createElement('div');
         row.className = 'row';

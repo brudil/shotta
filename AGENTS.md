@@ -31,6 +31,7 @@ Layout:
   `server.mjs` process left behind after the suite.
 - `src/storyboard.ts` — the per-step contact sheet, laid out by the browser itself.
 - `src/tiles.ts` — cutting tall shots into pieces for `--agent`.
+- `src/encode.ts` — writing an export as WebP or JPEG, in the browser.
 - `src/report.ts` — the shape of `run.json`. It is an interface other tools and agents
   read: add fields, do not rename or repurpose them.
 

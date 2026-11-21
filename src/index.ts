@@ -9,6 +9,7 @@ export type {
   StepHandlers,
 } from './config.js';
 export { defineConfig } from './config.js';
+export type { ImageFormat } from './encode.js';
 export type {
   ActionStep,
   BuiltinStep,

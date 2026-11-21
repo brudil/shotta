@@ -346,6 +346,8 @@ describe('resolveConfig', () => {
         name: 'docs',
         dir: 'docs/img',
         scale: 2,
+        format: 'png',
+        quality: 85,
         shots: [
           {
             address: 'cart/full@desktop',
@@ -358,6 +360,8 @@ describe('resolveConfig', () => {
         name: 'hero',
         dir: 'site',
         scale: null,
+        format: 'png',
+        quality: 85,
         shots: [
           {
             address: 'cart/full@phone',
@@ -388,7 +392,20 @@ describe('resolveConfig', () => {
     );
     expect(
       withExport({ dir: 'out', shots: { 'img/hero.png': 'cart/full' } }),
-    ).toThrow('exports.docs: img/hero.png must be a .png file name');
+    ).toThrow(
+      'exports.docs: img/hero.png must be a file name ending .png, .webp or .jpg',
+    );
+    expect(
+      withExport({ dir: 'out', shots: { 'hero.gif': 'cart/full' } }),
+    ).toThrow(
+      'exports.docs: hero.gif must be a file name ending .png, .webp or .jpg',
+    );
+    expect(
+      withExport({ dir: 'out', format: 'gif', shots: ['cart/full'] }),
+    ).toThrow('exports.docs.format is png, webp or jpeg, not gif');
+    expect(
+      withExport({ dir: 'out', quality: 0, shots: ['cart/full'] }),
+    ).toThrow('exports.docs.quality is from 1 to 100, not 0');
     expect(withExport({ dir: 'out', scale: 0, shots: ['cart/full'] })).toThrow(
       'exports.docs.scale must be a positive number',
     );

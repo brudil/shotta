@@ -10,7 +10,8 @@ import { check, exportShots, listFlows, run, snap, stop } from './run.js';
 
 const HELP = `shotta [run] [target…]     run flows: all of them, or the targets
 shotta list [target…]      the catalog: each flow, what it shows, its routes and shots
-shotta snap <route…>       screenshot routes without writing a flow
+shotta snap <route…>       screenshot routes without writing a flow; with --of, one
+                           element on each
 shotta snap --steps <src>  run steps given as JSON: a file, - for stdin, or the JSON itself
 shotta export [name…]      write the configured exports: named shots, at a set
                            scale, under stable file names
@@ -44,6 +45,8 @@ written beside them under runs/.
   --config <file>     config file (default: shotta.config.{ts,js,json}, or in .config/)
   --json              print the report as JSON on stdout; progress goes to stderr
   --name <name>       snap: the flow name its output goes under (default snap)
+  --of <selector>     snap: shoot only this element on each route
+  --pad <px>          snap: with --of, this much of the page around it as well
   -h, --help
 
 Exits 0 when every pass succeeded, 1 when any failed, 2 when the run could not start.
@@ -75,6 +78,8 @@ const { values, positionals } = parseArgs({
     route: { type: 'string' },
     steps: { type: 'string' },
     name: { type: 'string' },
+    of: { type: 'string' },
+    pad: { type: 'string' },
   },
 });
 
@@ -238,6 +243,8 @@ try {
             ? undefined
             : await readSteps(values.steps),
         name: values.name,
+        of: values.of,
+        pad: number(values.pad),
       }),
     );
   }

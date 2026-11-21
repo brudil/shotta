@@ -6,6 +6,7 @@
  */
 import type { Page } from 'playwright';
 
+import { EXTENSION, formatOf, type ImageFormat } from './encode.js';
 import { type CustomSteps, RESERVED_STEP_KEYS, type Selector } from './flow.js';
 import { parseTarget, type Target } from './targets.js';
 
@@ -87,9 +88,16 @@ export interface ExportConfig {
   /** Device scale factor to shoot at. Default: each profile's own. */
   scale?: number;
   /**
+   * What the files are: `png` (the default), `webp` or `jpeg`. For a list of
+   * shots; in a map, each file's own extension says.
+   */
+  format?: ImageFormat;
+  /** How much a `webp` or `jpeg` keeps, 1 to 100. Default 85. */
+  quality?: number;
+  /**
    * The shots, each `flow/shot` or `flow/shot@profile`. As a list, files are
-   * named `<flow>.<shot>.<profile>.png`. As a map of file name → address, each
-   * address must come to one profile.
+   * named `<flow>.<shot>.<profile>.<extension>`. As a map of file name →
+   * address, each address must come to one profile.
    */
   shots: string[] | Record<string, string>;
 }
@@ -98,6 +106,9 @@ export interface ResolvedExport {
   name: string;
   dir: string;
   scale: number | null;
+  /** What a file is when its name does not say: the list form's. */
+  format: ImageFormat;
+  quality: number;
   shots: { address: string; target: Target; file: string | null }[];
 }
 
@@ -286,6 +297,14 @@ function resolveExport([name, config]: [string, ExportConfig]): ResolvedExport {
   if (config.scale !== undefined && !(config.scale > 0)) {
     throw new Error(`${at}.scale must be a positive number`);
   }
+  const format = config.format ?? 'png';
+  if (!(format in EXTENSION)) {
+    throw new Error(`${at}.format is png, webp or jpeg, not ${format}`);
+  }
+  const quality = config.quality ?? 85;
+  if (!(quality >= 1 && quality <= 100)) {
+    throw new Error(`${at}.quality is from 1 to 100, not ${quality}`);
+  }
   if (typeof config.shots !== 'object' || config.shots === null) {
     throw new Error(
       `${at} needs shots: a list of addresses, or file name → address`,
@@ -299,6 +318,8 @@ function resolveExport([name, config]: [string, ExportConfig]): ResolvedExport {
     name,
     dir: config.dir,
     scale: config.scale ?? null,
+    format,
+    quality,
     shots: entries.map(([file, address]) => {
       const target = parseTarget(address);
       if (target.shot === null) {
@@ -306,8 +327,10 @@ function resolveExport([name, config]: [string, ExportConfig]): ResolvedExport {
           `${at}: ${address} names a flow; an export needs flow/shot`,
         );
       }
-      if (file !== null && !/^[^/\\]+\.png$/.test(file)) {
-        throw new Error(`${at}: ${file} must be a .png file name`);
+      if (file !== null && (/[/\\]/.test(file) || formatOf(file) === null)) {
+        throw new Error(
+          `${at}: ${file} must be a file name ending .png, .webp or .jpg`,
+        );
       }
       return { address, target, file };
     }),

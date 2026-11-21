@@ -57,6 +57,11 @@ export type BuiltinStep =
       shows?: string;
       /** Shoot only this element, rather than the whole page. */
       of?: Selector;
+      /**
+       * With `of`: this many pixels of the page around the element as well, so
+       * a component is seen in its place rather than cut out at its edge.
+       */
+      pad?: number;
       /** Shoot only what is on screen, rather than the whole page. */
       viewport?: boolean;
     }
@@ -142,6 +147,10 @@ export const RESERVED_STEP_KEYS: readonly string[] = [
   'into',
   'delay',
   'label',
+  'shows',
+  'of',
+  'pad',
+  'viewport',
   'annotate',
   'steps',
 ];
@@ -149,7 +158,7 @@ export const RESERVED_STEP_KEYS: readonly string[] = [
 /** The keys a step of each kind may carry beside the kind itself. */
 const EXTRA_KEYS: Partial<Record<BuiltinKind, string[]>> = {
   type: ['into', 'delay'],
-  shot: ['shows', 'of', 'viewport'],
+  shot: ['shows', 'of', 'pad', 'viewport'],
   run: ['label'],
 };
 
@@ -278,6 +287,17 @@ function checkAction(step: unknown, at: string, custom: string[]): void {
         (typeof step.of !== 'string' || step.of === '')
       ) {
         throw new Error(`${at}: of takes the selector of the element to shoot`);
+      }
+      if (
+        step.pad !== undefined &&
+        !(typeof step.pad === 'number' && step.pad >= 0)
+      ) {
+        throw new Error(`${at}: pad takes a number of pixels, 0 or more`);
+      }
+      if (step.pad !== undefined && step.of === undefined) {
+        throw new Error(
+          `${at}: pad is the page around an element: it needs "of"`,
+        );
       }
       if (step.viewport !== undefined && typeof step.viewport !== 'boolean') {
         throw new Error(`${at}: viewport takes true or false`);

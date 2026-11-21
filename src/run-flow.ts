@@ -246,7 +246,7 @@ export async function runFlow(
         );
         const area =
           step.of !== undefined
-            ? { of: step.of }
+            ? { of: step.of, pad: step.pad ?? 0 }
             : step.viewport === true
               ? 'viewport'
               : 'page';

@@ -115,9 +115,9 @@ describe('shotta check', () => {
     const result: CheckResult = JSON.parse(stdout);
 
     expect(status).toBe(0);
-    expect(result).toMatchObject({ ok: true, flows: 5, exports: 2 });
+    expect(result).toMatchObject({ ok: true, flows: 5, exports: 3 });
     expect(result.problems).toEqual([]);
-    expect(shots('check').stdout).toMatch(/^✓ 5 flows, \d+ shots, 2 exports$/m);
+    expect(shots('check').stdout).toMatch(/^✓ 5 flows, \d+ shots, 3 exports$/m);
   });
 
   it('finds every mistake at once: steps, profiles and exports', () => {
@@ -213,7 +213,11 @@ describe('shotta', () => {
     // the log beside the rows scrolls further still, but has a height of its
     // own and is left as it is.
     expect(size(result.passes[0]?.shots[0]?.file)).toBe('800x1864');
-    expect(size(result.passes[0]?.shots[1]?.file)).toBe('800x600');
+    // One element the panel shows only part of, shot whole the same way; and
+    // one row with 10px of the page around it, not cut out at its edge.
+    expect(size(result.passes[0]?.shots[1]?.file)).toBe('600x1800');
+    expect(size(result.passes[0]?.shots[2]?.file)).toBe('620x80');
+    expect(size(result.passes[0]?.shots[3]?.file)).toBe('800x600');
     expect(existsSync(result.passes[0]?.video ?? '')).toBe(true);
   });
 
@@ -377,6 +381,31 @@ describe('shotta snap', () => {
       'review/snap/desktop/01-index.png',
       'review/snap/desktop/02-about-html.png',
     ]);
+  });
+
+  it('shoots one element on a route, with the page around it, given --of', () => {
+    const { status, stdout } = shots(
+      'snap',
+      '/shell.html',
+      '--of',
+      '#row-3',
+      '--pad',
+      '8',
+      '--name',
+      'component',
+      '--profiles',
+      'desktop',
+      '--agent',
+    );
+    const shot = (JSON.parse(stdout) as RunResult).passes[0]?.shots[0];
+    const { width, height } = PNG.sync.read(readFileSync(shot?.file ?? ''));
+
+    expect(status).toBe(0);
+    expect(shot?.area).toBe('element');
+    // A row is 600 by 60.
+    expect(`${width}x${height}`).toBe('616x76');
+    // Padding is the page around something: it needs the something.
+    expect(shots('snap', '/shell.html', '--pad', '8').status).toBe(2);
   });
 
   it('runs steps given as JSON on stdin, project steps included', () => {
@@ -574,6 +603,12 @@ describe('shotta export', () => {
         '.shotta-exported/docs/still.heading.phone.png',
       ],
       ['hero', 'still/fold@phone', '.shotta-exported/hero.png'],
+      ['hero', 'still/fold@desktop', '.shotta-exported/hero.jpg'],
+      [
+        'web',
+        'still/fold@desktop',
+        '.shotta-exported/web/still.fold.desktop.webp',
+      ],
     ]);
 
     // The whole page of an 800-wide profile, at the export's 2x.
@@ -586,6 +621,15 @@ describe('shotta export', () => {
     // What was on screen, at the phone's own density.
     expect(size(exported('hero.png'))).toEqual({ width: 1179, height: 1977 });
 
+    // Written as what each was asked to be, by the browser that shot it.
+    const starts = (file: string, at: number, bytes: string): boolean =>
+      readFileSync(exported(file))
+        .subarray(at, at + bytes.length)
+        .toString('latin1') === bytes;
+    expect(starts('hero.jpg', 0, '\xff\xd8\xff')).toBe(true);
+    expect(starts('web/still.fold.desktop.webp', 0, 'RIFF')).toBe(true);
+    expect(starts('web/still.fold.desktop.webp', 8, 'WEBP')).toBe(true);
+
     // Shot in scratch output of its own, not over anyone's review or agent files.
     expect(relative(result.runs[0]?.outDir ?? '')).toBe('export');
   });
@@ -595,14 +639,18 @@ describe('shotta export', () => {
     const result: ExportResult = JSON.parse(stdout);
 
     expect(status).toBe(0);
-    expect(result.files.map((file) => file.export)).toEqual(['hero']);
+    expect([...new Set(result.files.map((file) => file.export))]).toEqual([
+      'hero',
+    ]);
   });
 
   it('exits 2 on an export that is not configured, naming those that are', () => {
     const { status, stderr } = shots('export', 'press-kit');
 
     expect(status).toBe(2);
-    expect(stderr).toContain('no export called press-kit (have: docs, hero)');
+    expect(stderr).toContain(
+      'no export called press-kit (have: docs, hero, web)',
+    );
   });
 });
 

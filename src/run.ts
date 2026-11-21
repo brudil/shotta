@@ -18,6 +18,7 @@ import {
   type ResolvedExport,
   resolveConfig,
 } from './config.js';
+import { type EncodeJob, EXTENSION, encodeImages, formatOf } from './encode.js';
 import {
   checkSteps,
   type Flow,
@@ -87,6 +88,13 @@ export interface SnapOptions extends CommonOptions {
   flow?: unknown;
   /** Names the output directory. Default `snap`. */
   name?: string;
+  /**
+   * With `paths`: shoot only this element on each route, rather than the
+   * page. The quick look at a component that was just changed.
+   */
+  of?: string;
+  /** With `of`: this many pixels of the page around the element as well. */
+  pad?: number;
 }
 
 export interface ExportOptions extends CommonOptions {
@@ -409,13 +417,31 @@ export async function snap(options: SnapOptions): Promise<RunResult> {
     );
   }
 
+  if (options.pad !== undefined && options.of === undefined) {
+    throw new Error('--pad is the page around an element: it needs --of');
+  }
+  if (options.of !== undefined && paths.length === 0) {
+    throw new Error(
+      '--of is for routes; in steps, say it on the shot: { "shot": …, "of": … }',
+    );
+  }
+
   let definition: FlowOptions;
   if (paths.length > 0) {
+    const area =
+      options.of === undefined
+        ? {}
+        : {
+            of: options.of,
+            ...(options.pad === undefined ? {} : { pad: options.pad }),
+          };
     definition = {
-      steps: paths.flatMap((route) => [
-        { goto: route },
-        { shot: shotNameFor(route) },
-      ]),
+      steps: checkSteps(
+        paths.flatMap((route) => [
+          { goto: route },
+          { shot: shotNameFor(route), ...area },
+        ]),
+      ),
     };
   } else {
     const given = options.flow;
@@ -606,6 +632,7 @@ export async function exportShots(
     result.runs.push(run);
     const dir = path.resolve(cwd, entry.dir);
     await mkdir(dir, { recursive: true });
+    const encode: EncodeJob[] = [];
     for (const { flow, shot, profiles, file } of wanted) {
       for (const profile of profiles) {
         const address = `${flow}/${shot}@${profile}`;
@@ -616,14 +643,38 @@ export async function exportShots(
           result.missing.push({ export: name, address });
           continue;
         }
+        // A file's own name says what it is; the list form's all share one.
+        const format =
+          file === null ? entry.format : (formatOf(file) ?? entry.format);
         const written: ExportedFile = {
           export: name,
           address,
-          file: path.join(dir, file ?? `${flow}.${shot}.${profile}.png`),
+          file: path.join(
+            dir,
+            file ?? `${flow}.${shot}.${profile}.${EXTENSION[format]}`,
+          ),
         };
-        await copyFile(taken.file, written.file);
+        if (format === 'png') {
+          await copyFile(taken.file, written.file);
+        } else {
+          encode.push({
+            from: taken.file,
+            to: written.file,
+            format,
+            quality: entry.quality,
+          });
+        }
         result.files.push(written);
         log(`  → ${path.relative(cwd, written.file)}`);
+      }
+    }
+    if (encode.length > 0) {
+      // The shots are PNGs; the browser that took them writes the rest.
+      const browser = await launchBrowser(false);
+      try {
+        await encodeImages(browser, encode);
+      } finally {
+        await browser.close();
       }
     }
   }

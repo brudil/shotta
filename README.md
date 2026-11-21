@@ -109,17 +109,17 @@ A flow file is named `<name>.shots.ts` (kebab-case) and default-exports
 but `run` is plain data, so the same steps can be written as JSON and run without a
 file (see `shotta snap`).
 
-| Step                                       | Does                                                                                                                                                               |
-| ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `{ goto: '/path' }`                        | Navigate. Relative paths resolve against the app.                                                                                                                  |
-| `{ click: selector }`                      | Move the pointer to the element and click it. Taps on touch profiles.                                                                                              |
-| `{ hover: selector }`                      | Move the pointer over the element. Skipped on touch profiles.                                                                                                      |
-| `{ type: 'text', into: selector }`         | Clear the field and type, one key at a time. `delay` sets ms per key.                                                                                              |
-| `{ scroll: selector }` / `{ scroll: 400 }` | Scroll the element into view, or by that many pixels.                                                                                                              |
-| `{ press: 'Escape' }`                      | Press a key.                                                                                                                                                       |
-| `{ wait: selector }`                       | Wait for the element to appear.                                                                                                                                    |
-| `{ shot: 'name', shows: '…' }`             | Checkpoint a screenshot of the full page, named for the state it shows. `of: selector` shoots one element instead; `viewport: true` shoots only what is on screen. |
-| `{ run: async (page) => {…}, label: '…' }` | Anything else, with the Playwright `Page`.                                                                                                                         |
+| Step                                       | Does                                                                                                                                                                                                                   |
+| ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `{ goto: '/path' }`                        | Navigate. Relative paths resolve against the app.                                                                                                                                                                      |
+| `{ click: selector }`                      | Move the pointer to the element and click it. Taps on touch profiles.                                                                                                                                                  |
+| `{ hover: selector }`                      | Move the pointer over the element. Skipped on touch profiles.                                                                                                                                                          |
+| `{ type: 'text', into: selector }`         | Clear the field and type, one key at a time. `delay` sets ms per key.                                                                                                                                                  |
+| `{ scroll: selector }` / `{ scroll: 400 }` | Scroll the element into view, or by that many pixels.                                                                                                                                                                  |
+| `{ press: 'Escape' }`                      | Press a key.                                                                                                                                                                                                           |
+| `{ wait: selector }`                       | Wait for the element to appear.                                                                                                                                                                                        |
+| `{ shot: 'name', shows: '…' }`             | Checkpoint a screenshot of the full page, named for the state it shows. `of: selector` shoots one element instead, with `pad: 24` for that much of the page around it; `viewport: true` shoots only what is on screen. |
+| `{ run: async (page) => {…}, label: '…' }` | Anything else, with the Playwright `Page`.                                                                                                                                                                             |
 
 Selectors are Playwright selector strings: `text=Load more`,
 `role=button[name="Clear"]`, `[data-testid=x]`, `css >> nth=1`.
@@ -153,6 +153,12 @@ included, with the recording paused meanwhile. Anything the app loads only once 
 comes into view is loaded by that, as it would be by scrolling. A panel with a height
 of its own, or one under half the screen's height (a menu, a code block), is left as
 it scrolls. `viewport: true` shoots only what is on screen.
+
+A shot `of` one element is of all of that element too: one that a scrolling panel
+shows only part of is shot whole, the same way. `pad` adds that many pixels of the
+page around it, so a component is seen in its place rather than cut out at its edge;
+the element is brought to the middle of what shows it first, so there is page to see
+on every side. Either way the page is left scrolled as it was.
 
 Flow options, beside `steps` and `shows`:
 
@@ -328,9 +334,13 @@ shotta export          # every export
 shotta export site     # one
 ```
 
-- `shotta` — addresses, each `flow/shot` or `flow/shot@profile`. As a list, files are
+- `shots` — addresses, each `flow/shot` or `flow/shot@profile`. As a list, files are
   named `<flow>.<shot>.<profile>.png`, one per profile the address covers. As a map
   of file name → address, each address must come to exactly one profile.
+- `format` — `png` (the default), `webp` or `jpeg`, for a list of shots; in a map,
+  each file's own extension says (`'hero.webp': …`). `quality`, from 1 to 100
+  (default 85), is how much a `webp` or `jpeg` keeps. The browser that took the shots
+  writes them, so nothing else needs installing.
 - `scale` — the device scale factor to shoot at; without it, each profile's own.
 - `dir` — where the files go. Whether that directory is committed is the project's
   decision: commit it when the images are part of what you publish.
@@ -347,7 +357,8 @@ listed under `missing`, and the command exits `1`.
 ```
 shotta [run] [target…]     run flows: all of them, or the targets
 shotta list [target…]      the catalog: each flow, what it shows, its routes and shots
-shotta snap <route…>       screenshot routes without writing a flow
+shotta snap <route…>       screenshot routes without writing a flow; with --of, one
+                           element on each
 shotta snap --steps <src>  run steps given as JSON: a file, - for stdin, or the JSON itself
 shotta export [name…]      write the configured exports
 shotta check               say what is wrong with the config, the flows and the exports
@@ -370,6 +381,8 @@ shotta stop                stop the app an earlier run left up
   --config <file>     config file
   --json              print the report as JSON on stdout; progress goes to stderr
   --name <name>       snap: the flow name its output goes under (default snap)
+  --of <selector>     snap: shoot only this element on each route
+  --pad <px>          snap: with --of, this much of the page around it as well
 ```
 
 For output you will look at once, or move somewhere yourself, send it elsewhere:
@@ -409,6 +422,13 @@ loads and shoots each one, naming the shot for the route:
 
 ```sh
 shotta snap / /settings/billing     # → .shotta/review/snap/<profile>/01-index.png, 02-settings-billing.png
+```
+
+With `--of`, it shoots one element on each route instead of the page — the quick look
+at a component that was just changed, small enough for a model to read in one piece:
+
+```sh
+shotta snap /settings/billing --of '[data-testid=plan-card]' --pad 24 --agent
 ```
 
 Given steps, it runs them as a flow — an array of steps, or
@@ -552,7 +572,8 @@ Put something like this in the project's `AGENTS.md`:
 > `passes[].storyboard` first: one image shows a whole journey. Then read
 > `passes[].shots[].tiles` for the states that need a closer look, and check each
 > against its `shows`. For a screen with no flow, use `pnpm shotta snap <route> --agent`,
-> or pipe steps as JSON to `pnpm shotta snap --steps - --agent`. If `ok` is false, read
+> or pipe steps as JSON to `pnpm shotta snap --steps - --agent`. For one component you
+> changed, shoot only it: `pnpm shotta snap <route> --of '<selector>' --pad 24 --agent`. If `ok` is false, read
 > `failure.message` and `failure.aria` (then `failure.screenshot` and
 > `consoleErrors`) before changing anything. When you are done, run the same targets
 > without `--agent` and give the user the storyboard and video paths. A screen's

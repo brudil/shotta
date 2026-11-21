@@ -1,6 +1,6 @@
 /** Waiting for the page to hold still, and capturing it once it does. */
 import pixelmatch from 'pixelmatch';
-import type { Page, Request } from 'playwright';
+import type { Locator, Page, Request } from 'playwright';
 import { PNG } from 'pngjs';
 
 import { freezeOverlays, hideOverlays } from './overlays.js';
@@ -279,7 +279,14 @@ async function settlePixels(page: Page): Promise<void> {
 }
 
 /** What a shot is of: the whole page, what is on screen, or one element. */
-export type ShotArea = 'page' | 'viewport' | { of: string };
+export type ShotArea =
+  | 'page'
+  | 'viewport'
+  | {
+      of: string;
+      /** Pixels of the page kept around the element. */
+      pad: number;
+    };
 
 /** A panel counts as the page's own scrolling when it is this much of the viewport's height. */
 const PANEL_SHARE = 0.5;
@@ -498,6 +505,118 @@ async function showWholePanels(
 }
 
 /**
+ * Write a screenshot of one element, with as much of the page around it as
+ * `pad` asks for. One that a scrolling panel shows only part of is shot whole,
+ * the way a page is: in a viewport tall enough for the panel to show it all.
+ */
+async function captureElement(
+  page: Page,
+  file: string,
+  { of, pad }: { of: string; pad: number },
+  network: NetworkTracker,
+): Promise<void> {
+  const target = page.locator(of).first();
+  // Bringing it into view is for the picture alone: wherever the page and
+  // the panels around the element were scrolled to, they are put back.
+  await target.evaluate((element) => {
+    const kept: [Element, number, number][] = [];
+    for (let a = element.parentElement; a !== null; a = a.parentElement) {
+      kept.push([a, a.scrollTop, a.scrollLeft]);
+    }
+    (window as ScrollWindow).__shotsScroll = {
+      kept,
+      x: window.scrollX,
+      y: window.scrollY,
+    };
+  });
+  try {
+    await target.scrollIntoViewIfNeeded();
+    await shootElement(page, file, target, of, pad, network);
+  } finally {
+    await page.evaluate(() => {
+      const scroll = (window as ScrollWindow).__shotsScroll;
+      if (scroll === undefined) return;
+      for (const [element, top, left] of scroll.kept) {
+        element.scrollTop = top;
+        element.scrollLeft = left;
+      }
+      window.scrollTo(scroll.x, scroll.y);
+      delete (window as ScrollWindow).__shotsScroll;
+    });
+  }
+}
+
+type ScrollWindow = Window & {
+  __shotsScroll?: { kept: [Element, number, number][]; x: number; y: number };
+};
+
+async function shootElement(
+  page: Page,
+  file: string,
+  target: Locator,
+  of: string,
+  pad: number,
+  network: NetworkTracker,
+): Promise<void> {
+  // Whether all of it can be seen, which an ancestor that clips it decides as
+  // much as the viewport does: the browser's own answer covers both.
+  const whole = await target.evaluate(
+    (element) =>
+      new Promise<boolean>((resolve) => {
+        const observer = new IntersectionObserver((entries) => {
+          observer.disconnect();
+          resolve((entries[0]?.intersectionRatio ?? 0) > 0.999);
+        });
+        observer.observe(element);
+      }),
+  );
+  if (whole && pad === 0) {
+    await target.screenshot({ path: file });
+    return;
+  }
+  const restore = whole ? null : await showWholePanels(page);
+  try {
+    if (restore !== null) {
+      await settle(page, network);
+      await settlePixels(page);
+    } else {
+      // In the middle of what shows it, so the page around it is there to
+      // be seen on every side.
+      await target.evaluate((element) =>
+        element.scrollIntoView({ block: 'center', inline: 'center' }),
+      );
+      await drawn(page);
+    }
+    const box = await target.boundingBox();
+    if (box === null) throw new Error(`nothing to shoot at: ${of}`);
+    const within = await page.evaluate(() => ({
+      x: window.scrollX,
+      y: window.scrollY,
+      width: document.documentElement.scrollWidth,
+      height: document.documentElement.scrollHeight,
+    }));
+    // In the document's coordinates, and no further than its edges.
+    const left = Math.max(0, Math.floor(box.x + within.x - pad));
+    const top = Math.max(0, Math.floor(box.y + within.y - pad));
+    const right = Math.min(
+      within.width,
+      Math.ceil(box.x + within.x + box.width + pad),
+    );
+    const bottom = Math.min(
+      within.height,
+      Math.ceil(box.y + within.y + box.height + pad),
+    );
+    await page.screenshot({
+      path: file,
+      fullPage: true,
+      clip: { x: left, y: top, width: right - left, height: bottom - top },
+    });
+  } finally {
+    await restore?.();
+  }
+}
+
+/**
  * Write a screenshot of the settled page, without the overlays. A recording
  * is paused for it: the overlays are hidden, and a shot of the page is taken
  * in a viewport as tall as its content, neither of which belongs in the video.
@@ -519,7 +638,7 @@ export async function capture(
       await hideOverlays(page, true);
       try {
         if (typeof area === 'object') {
-          await page.locator(area.of).first().screenshot({ path: file });
+          await captureElement(page, file, area, network);
         } else if (area === 'viewport') {
           await page.screenshot({ path: file });
         } else {
