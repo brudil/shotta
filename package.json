@@ -23,7 +23,7 @@
     "node": ">=22.18"
   },
   "bin": {
-    "shotta": "./dist/cli.js"
+    "shotta": "dist/cli.js"
   },
   "exports": {
     ".": {
