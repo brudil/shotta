@@ -9,6 +9,7 @@ const profile = (name: string): ResolvedProfile => ({
   device: null,
   viewport: { width: 800, height: 600 },
   deviceScaleFactor: 1,
+  colorScheme: null,
   hasTouch: false,
 });
 const desktop = profile('desktop');
@@ -24,6 +25,11 @@ const flow = (name: string, shots: string[]): Flow => ({
   file: `/repo/src/${name}.shots.ts`,
   steps: shots.flatMap((shot) => [{ click: `#${shot}` }, { shot }]),
 });
+/** A journey through a layout only the larger screens have. */
+const wide: Flow = {
+  ...flow('wide', ['panel']),
+  profiles: ['tablet', 'desktop'],
+};
 const flows = [
   flow('cart', ['empty', 'full']),
   flow('checkout', ['address', 'payment', 'done']),
@@ -93,6 +99,45 @@ describe('planPasses', () => {
       'cart@phone:4',
       'checkout@phone:6',
     ]);
+  });
+
+  it('runs a flow with profiles of its own at those, in the order configured', () => {
+    const at = (config: object, ...targets: string[]): string[] =>
+      planPasses(
+        [flows[0] as Flow, wide],
+        { ...profiles, ...config },
+        targets.map(parseTarget),
+      ).map((pass) => `${pass.flow.name}@${pass.profile.name}`);
+
+    expect(at({})).toEqual([
+      'cart@desktop',
+      'cart@phone',
+      'wide@desktop',
+      'wide@tablet',
+    ]);
+    expect(at({}, 'wide/panel')).toEqual(['wide@desktop', 'wide@tablet']);
+    // Asked for by name, any configured profile will do.
+    expect(at({}, 'wide@phone')).toEqual(['wide@phone']);
+    // The command line narrows: only the phone leaves this flow nothing.
+    expect(at({ profiles: [phone], profilesChosen: true })).toEqual([
+      'cart@phone',
+    ]);
+    expect(at({ profiles: [tablet], profilesChosen: true }, 'wide')).toEqual([
+      'wide@tablet',
+    ]);
+  });
+
+  it('refuses a flow whose own profiles are not configured ones', () => {
+    const plan = (own: unknown) => () =>
+      planPasses([{ ...wide, profiles: own as string[] }], profiles, []);
+
+    expect(plan(['watch'])).toThrow(
+      'wide: unknown profile: watch (have: desktop, tablet, phone)',
+    );
+    expect(plan('desktop')).toThrow(
+      'wide: profiles takes a list of profile names',
+    );
+    expect(plan([])).toThrow('wide: profiles takes a list of profile names');
   });
 
   it('says what is there when a target names something that is not', () => {

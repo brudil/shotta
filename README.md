@@ -1,8 +1,8 @@
-# shots
+# shotta
 
 Scripted screenshots and journey videos of a web app, driven by Playwright.
 
-A flow is a short script: go here, click that, checkpoint a screenshot. `shots` runs
+A flow is a short script: go here, click that, checkpoint a screenshot. `shotta` runs
 flows at the viewport profiles you configure and writes, per flow and profile, the
 checkpoint PNGs, a `journey.webm` of the whole thing, and a storyboard: the journey
 as one captioned contact sheet. Use it to put real screens in pull requests and
@@ -14,17 +14,17 @@ It is not a visual-regression gate: nothing is compared against a baseline.
 ## Setup
 
 ```sh
-pnpm add -D shots playwright
+pnpm add -D shotta playwright
 pnpm exec playwright install chromium-headless-shell
 ```
 
 Node 22.18 or later, Playwright 1.59 or later. Flows and the config are TypeScript files that Node loads
 directly, so they must use erasable syntax only (no enums, no parameter properties).
 
-`shots.config.ts`, in the project root or in `.config/`:
+`shotta.config.ts`, in the project root or in `.config/`:
 
 ```ts
-import { defineConfig } from 'shots';
+import { defineConfig } from 'shotta';
 
 export default defineConfig({
   server: { command: 'pnpm exec vite --port {port}' },
@@ -38,7 +38,7 @@ export default defineConfig({
 `src/checkout/checkout.shots.ts`, beside the code it shows:
 
 ```ts
-import { defineFlow } from 'shots';
+import { defineFlow } from 'shotta';
 
 export default defineFlow({
   shows: 'Paying for a cart with a saved card',
@@ -58,20 +58,22 @@ export default defineFlow({
 ```
 
 ```sh
-pnpm shots                              # every flow, every profile
-pnpm shots checkout                     # one flow
-pnpm shots checkout/cart@phone          # one shot at one profile: the flow stops there
+pnpm shotta                              # every flow, every profile
+pnpm shotta checkout                     # one flow
+pnpm shotta checkout/cart@phone          # one shot at one profile: the flow stops there
 ```
 
 ## What is where
 
-|                                                        | Committed?                                         |
-| ------------------------------------------------------ | -------------------------------------------------- |
-| Flows (`*.shots.ts`), `shots.config.ts`, project steps | Yes. They are the source.                          |
-| `.shots/` — everything a run writes                    | No. It is all regenerable; add it to `.gitignore`. |
+|                                                         | Committed?                                                         |
+| ------------------------------------------------------- | ------------------------------------------------------------------ |
+| Flows (`*.shots.ts`), `shotta.config.ts`, project steps | Yes. They are the source.                                          |
+| `.shotta/` — everything a run writes                    | No. It is all regenerable; add it to `.gitignore`.                 |
+| An export's `dir`                                       | Your call. Commit it when the images are part of what you publish. |
 
 ```
-.shots/
+.shotta/
+  export/                 scratch for `shotta export`
   review/                 what a person opens: full-size shots, videos, storyboards
     checkout/
       desktop/
@@ -82,7 +84,7 @@ pnpm shots checkout/cart@phone          # one shot at one profile: the flow stop
       phone/…
     runs/<time>.json      one report per run, the newest 20
   agent/                  the same, sized for a model (--agent); never overwrites review/
-  server.json, server.log the app shots is keeping up, if any
+  server.json, server.log the app shotta is keeping up, if any
 ```
 
 ## Addresses
@@ -105,19 +107,19 @@ shot any of them asks for.
 A flow file is named `<name>.shots.ts` (kebab-case) and default-exports
 `defineFlow(...)`. The name is the file stem, unique across the project. Every step
 but `run` is plain data, so the same steps can be written as JSON and run without a
-file (see `shots snap`).
+file (see `shotta snap`).
 
-| Step                                       | Does                                                                  |
-| ------------------------------------------ | --------------------------------------------------------------------- |
-| `{ goto: '/path' }`                        | Navigate. Relative paths resolve against the app.                     |
-| `{ click: selector }`                      | Move the pointer to the element and click it. Taps on touch profiles. |
-| `{ hover: selector }`                      | Move the pointer over the element. Skipped on touch profiles.         |
-| `{ type: 'text', into: selector }`         | Clear the field and type, one key at a time. `delay` sets ms per key. |
-| `{ scroll: selector }` / `{ scroll: 400 }` | Scroll the element into view, or by that many pixels.                 |
-| `{ press: 'Escape' }`                      | Press a key.                                                          |
-| `{ wait: selector }`                       | Wait for the element to appear.                                       |
-| `{ shot: 'name', shows: '…' }`             | Checkpoint a full-page screenshot, named for the state it shows.      |
-| `{ run: async (page) => {…}, label: '…' }` | Anything else, with the Playwright `Page`.                            |
+| Step                                       | Does                                                                                                                                                               |
+| ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `{ goto: '/path' }`                        | Navigate. Relative paths resolve against the app.                                                                                                                  |
+| `{ click: selector }`                      | Move the pointer to the element and click it. Taps on touch profiles.                                                                                              |
+| `{ hover: selector }`                      | Move the pointer over the element. Skipped on touch profiles.                                                                                                      |
+| `{ type: 'text', into: selector }`         | Clear the field and type, one key at a time. `delay` sets ms per key.                                                                                              |
+| `{ scroll: selector }` / `{ scroll: 400 }` | Scroll the element into view, or by that many pixels.                                                                                                              |
+| `{ press: 'Escape' }`                      | Press a key.                                                                                                                                                       |
+| `{ wait: selector }`                       | Wait for the element to appear.                                                                                                                                    |
+| `{ shot: 'name', shows: '…' }`             | Checkpoint a screenshot of the full page, named for the state it shows. `of: selector` shoots one element instead; `viewport: true` shoots only what is on screen. |
+| `{ run: async (page) => {…}, label: '…' }` | Anything else, with the Playwright `Page`.                                                                                                                         |
 
 Selectors are Playwright selector strings: `text=Load more`,
 `role=button[name="Clear"]`, `[data-testid=x]`, `css >> nth=1`.
@@ -126,6 +128,8 @@ Selectors are Playwright selector strings: `text=Load more`,
 there. It is what turns "a screenshot" into a claim that can be checked: it appears in
 the catalog, in the report beside the shot, and as the caption on the storyboard.
 Write it for someone who has not seen the screen.
+
+A shot's name is its address (`flow/shot`), so it is unique within its flow.
 
 `{ annotate: 'Drill into a hazard', steps: [...] }` names a chapter. It is captioned
 in the video for the length of its steps and its shots go in a subdirectory. Narrate a
@@ -136,6 +140,20 @@ nothing `aria-busy`, no finite animation running, the network quiet, and before 
 shot, successive frames identical (which covers canvas). So a numeric `wait` should not
 be needed; if a flow needs one, something is busy that settling cannot see.
 
+Sockets and event streams (`WebSocket`, `EventSource`) are never waited for. Anything
+else that stays in flight holds a step for twenty seconds before the flow carries on
+without it; the log and the report's `unsettled` name what it was, and a request named
+there belongs in `ignoreRequests`. Having outlasted one step, it is not waited for
+again in that pass.
+
+A shot of the page is of all of it, however the app scrolls. Where the document is
+one screen tall and a panel inside it does the scrolling, the viewport is made as
+tall as the panel's content for the screenshot and then put back, scroll positions
+included, with the recording paused meanwhile. Anything the app loads only once it
+comes into view is loaded by that, as it would be by scrolling. A panel with a height
+of its own, or one under half the screen's height (a menu, a code block), is left as
+it scrolls. `viewport: true` shoots only what is on screen.
+
 Flow options, beside `steps` and `shows`:
 
 - `video` — a flow is recorded only when something moves in it (a click, hover, type,
@@ -145,6 +163,10 @@ Flow options, beside `steps` and `shows`:
   draws none; it holds on a target before pressing so the click reads on video.
   `false` turns it off. Touch profiles show a ring where the tap landed instead.
 - `pace` — pause between steps in ms, overriding the configured one.
+- `profiles` — the profiles this flow runs at, in place of the config's `run`:
+  `profiles: ['desktop', 'tablet']` for a journey through a layout a phone does not
+  have. `--profiles` still narrows it, so a run asked for at `phone` alone skips the
+  flow, and a target can still name any profile (`checkout@phone`).
 
 A recording opens on the app once it has first settled, not on a blank page, and is
 paused while each shot is captured, so nothing done for the screenshot shows in it.
@@ -152,7 +174,10 @@ paused while each shot is captured, so nothing done for the screenshot shows in 
 The cursor, its travel and the pace exist for the recording. A pass that records no
 video skips them and clicks directly, which is what makes `--no-video` fast.
 
-Sizes are a project decision, so a flow cannot set its own.
+Sizes are a project decision, so a flow cannot set its own; it can only say which of
+the project's it is for. Where a journey differs between layouts, write a flow for
+each and share the steps they have in common: steps are data, so they can be exported
+from one file and spread into another.
 
 ### Where flows live
 
@@ -161,23 +186,23 @@ a flow can sit beside the feature it shows — `src/checkout/checkout.shots.ts` 
 the checkout code. That is what lets someone who changed a file find what shows it:
 
 ```sh
-shots list --near src/checkout/summary.component.ts   # the flows beside it, or in the nearest directory above
-shots list --route /checkout                          # the flows that go there
+shotta list --near src/checkout/summary.component.ts   # the flows beside it, or in the nearest directory above
+shotta list --route /checkout                          # the flows that go there
 ```
 
-Both options work on `shots run` too. Set `flows` to a directory to keep them all in
+Both options work on `shotta run` too. Set `flows` to a directory to keep them all in
 one place instead.
 
 ### Steps of your own
 
 A project can add steps, so flows — JSON ones included — can say things like
 `{ login: 'admin' }` instead of repeating a `run`. Declare each step's name and value
-type, and give its handler, in `shots.config.ts`:
+type, and give its handler, in `shotta.config.ts`:
 
 ```ts
-import { defineConfig } from 'shots';
+import { defineConfig } from 'shotta';
 
-declare module 'shots' {
+declare module 'shotta' {
   interface CustomSteps {
     login: 'admin' | 'viewer';
   }
@@ -197,27 +222,52 @@ config file is part of the same TypeScript project.
 
 ## Configuration
 
-`shots.config.{ts,mts,js,mjs,json}` in the project root or `.config/`, or anywhere
-with `--config`. Paths in it are relative to the directory `shots` runs in.
+`shotta.config.{ts,mts,js,mjs,json}` in the project root or `.config/`, or anywhere
+with `--config`. Paths in it are relative to the directory `shotta` runs in.
 
-| Key              | Default                     |                                                                                                                                                            |
-| ---------------- | --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `flows`          | `.`                         | Directory searched, recursively, for flow files.                                                                                                           |
-| `outDir`         | `.shots`                    | Where output is written. Each flow-and-profile directory is emptied before its pass.                                                                       |
-| `profiles`       | one 1440×1000 @2x `desktop` | Named viewports: a Playwright `device` preset, or a `viewport` and `deviceScaleFactor`, or a preset with overrides.                                        |
-| `run`            | every profile               | Profiles a run uses unless a target names another (`@tablet`), in order.                                                                                   |
-| `server`         | —                           | `{ command, url?, readyTimeout?, keepAlive? }` — see below.                                                                                                |
-| `baseUrl`        | —                           | An app that is already running; wins over `server`.                                                                                                        |
-| `workers`        | half the cores, at most 4   | Passes run at once when none is being recorded. Set `1` if passes share state outside the browser.                                                         |
-| `pace`           | `200`                       | Pause between steps while recording, in ms.                                                                                                                |
-| `video`          | `true`                      | Record journey videos.                                                                                                                                     |
-| `storyboard`     | `true`                      | Write a storyboard for every flow in which something moves.                                                                                                |
-| `actionTimeout`  | `30000`                     | How long one step may take to find and act on its target, in ms.                                                                                           |
-| `localStorage`   | `{}`                        | Set before the app boots on every page, e.g. a flag that turns API mocking on.                                                                             |
-| `hide`           | `[]`                        | CSS selectors hidden in every shot and video, e.g. dev-only overlays.                                                                                      |
-| `ignoreRequests` | `[]`                        | Requests that never go quiet (pollers, telemetry), as URL substrings or regular expressions. Dev-server module and hot-update requests are always ignored. |
-| `failWhen`       | `[]`                        | `{ selector, message? }` conditions checked after every step — e.g. the app's error boundary.                                                              |
-| `steps`          | `{}`                        | Steps of the project's own, as name → `(page, value) => Promise<void>`. Needs a `.ts` or `.js` config.                                                     |
+| Key              | Default                     |                                                                                                                                                                                                       |
+| ---------------- | --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `flows`          | `.`                         | Directory searched, recursively, for flow files.                                                                                                                                                      |
+| `outDir`         | `.shotta`                   | Where output is written. Each flow-and-profile directory is emptied before its pass.                                                                                                                  |
+| `profiles`       | one 1440×1000 @2x `desktop` | Named viewports: a Playwright `device` preset, or a `viewport` and `deviceScaleFactor`, or a preset with overrides. `colorScheme: 'dark'` (or `'light'`) is what the page is told the system prefers. |
+| `run`            | every profile               | Profiles a run uses, in order, unless a flow lists its own (`profiles`) or a target names another (`@tablet`).                                                                                        |
+| `server`         | —                           | `{ command, url?, readyTimeout?, keepAlive? }` — see below.                                                                                                                                           |
+| `baseUrl`        | —                           | An app that is already running; wins over `server`.                                                                                                                                                   |
+| `workers`        | half the cores, at most 4   | Passes run at once when none is being recorded. Set `1` if passes share state outside the browser.                                                                                                    |
+| `pace`           | `200`                       | Pause between steps while recording, in ms.                                                                                                                                                           |
+| `video`          | `true`                      | Record journey videos.                                                                                                                                                                                |
+| `storyboard`     | `true`                      | Write a storyboard for every flow in which something moves.                                                                                                                                           |
+| `actionTimeout`  | `30000`                     | How long one step may take to find and act on its target, in ms.                                                                                                                                      |
+| `localStorage`   | `{}`                        | Set before the app boots on every page, e.g. a flag that turns API mocking on.                                                                                                                        |
+| `hide`           | `[]`                        | CSS selectors hidden in every shot and video, e.g. dev-only overlays.                                                                                                                                 |
+| `ignoreRequests` | `[]`                        | Requests that never go quiet (pollers, telemetry), as URL substrings or regular expressions. Sockets, event streams, and dev-server module and hot-update requests are always ignored.                |
+| `failWhen`       | `[]`                        | `{ selector, message? }` conditions checked after every step — e.g. the app's error boundary.                                                                                                         |
+| `steps`          | `{}`                        | Steps of the project's own, as name → `(page, value) => Promise<void>`. Needs a `.ts` or `.js` config.                                                                                                |
+| `setup`          | —                           | `(page, { baseUrl, profile }) => Promise<void>`, run once per pass before its first step — see below. Needs a `.ts` or `.js` config.                                                                  |
+| `exports`        | `{}`                        | Named sets of shots for `shotta export` — see below.                                                                                                                                                  |
+
+### Signing in
+
+Every pass starts in a browser of its own, with no cookies and no storage, which is
+what keeps one flow's state out of the next. For an app behind a sign-in, `setup` is
+where each pass signs in: it runs before the flow's first step and before any
+recording starts, so it is in no video, and it applies to `shotta snap` and
+`shotta export` as much as to a flow.
+
+```ts
+export default defineConfig({
+  setup: async (page, { baseUrl }) => {
+    await page.goto(`${baseUrl}/login`);
+    await page.fill('[name=email]', 'demo@example.com');
+    await page.fill('[name=password]', process.env.DEMO_PASSWORD ?? '');
+    await page.click('role=button[name="Sign in"]');
+    await page.waitForURL(`${baseUrl}/`);
+  },
+});
+```
+
+A cookie or a header does as well: `page.context().addCookies([...])`,
+`page.setExtraHTTPHeaders({...})`. If `setup` throws, the pass fails at step `0`.
 
 ### The app server
 
@@ -226,16 +276,16 @@ as `PORT`); `server.url` (default `http://localhost:{port}`) is where it answers
 
 The app is then **left running** for `server.keepAlive` ms after its last use (default
 ten minutes), so the next run — or several at once — skip the startup. A run uses the
-app an earlier one left up only if `shots` started it, for this project, with the
-command still configured; otherwise it is restarted. `shots stop` stops it now.
-Its output goes to `.shots/server.log`.
+app an earlier one left up only if `shotta` started it, for this project, with the
+command still configured; otherwise it is restarted. `shotta stop` stops it now.
+Its output goes to `.shotta/server.log`.
 
 This assumes the app picks up source changes by itself, as a dev server does. For one
 that does not (a static build, say), set `keepAlive: 0`: the app is then started and
 stopped with every run.
 
 To run against an app you already have up, give its URL: `--base-url <url>` on the
-command line, or `baseUrl` in the config. `shots` then manages no process at all — it
+command line, or `baseUrl` in the config. `shotta` then manages no process at all — it
 starts nothing, and neither uses nor stops an app it left up earlier — and exits `2`
 straight away if nothing answers there. Without a URL, a server the developer happens
 to have running is never used by accident: it may be another checkout or another
@@ -249,18 +299,63 @@ safe when a pass's state lives in the browser (mocked APIs, local storage). If p
 write to a shared backend, set `workers: 1`. Recorded passes always run alone, after
 the others: a recording is only as smooth as the machine is idle.
 
+## Exports
+
+Everything under `.shotta/` is scratch. An export is the opposite: a named set of
+shots written under stable file names to a directory of your choosing — the screens
+for a docs site, a README or a marketing page, regenerated with one command instead
+of retaken by hand.
+
+```ts
+export default defineConfig({
+  exports: {
+    docs: {
+      dir: 'docs/screens',
+      scale: 2,
+      shots: ['checkout/cart@desktop', 'checkout/ready-to-pay'],
+    },
+    site: {
+      dir: 'site/public/img',
+      scale: 3,
+      shots: { 'hero.png': 'dashboard/summary-card@desktop' },
+    },
+  },
+});
+```
+
+```sh
+shotta export          # every export
+shotta export site     # one
+```
+
+- `shotta` — addresses, each `flow/shot` or `flow/shot@profile`. As a list, files are
+  named `<flow>.<shot>.<profile>.png`, one per profile the address covers. As a map
+  of file name → address, each address must come to exactly one profile.
+- `scale` — the device scale factor to shoot at; without it, each profile's own.
+- `dir` — where the files go. Whether that directory is committed is the project's
+  decision: commit it when the images are part of what you publish.
+
+A shot of one element (`of`) or of the viewport (`viewport: true`) is usually what an
+export wants, rather than a whole page. Flows run only as far as the shots asked
+for, without video or storyboard, in scratch output of their own
+(`.shotta/export/`), so an export never disturbs what anyone last looked at. If a
+shot cannot be taken, the file already in `dir` is left as it is, the address is
+listed under `missing`, and the command exits `1`.
+
 ## Command line
 
 ```
-shots [run] [target…]     run flows: all of them, or the targets
-shots list [target…]      the catalog: each flow, what it shows, its routes and shots
-shots snap <route…>       screenshot routes without writing a flow
-shots snap --steps <src>  run steps given as JSON: a file, - for stdin, or the JSON itself
-shots stop                stop the app an earlier run left up
+shotta [run] [target…]     run flows: all of them, or the targets
+shotta list [target…]      the catalog: each flow, what it shows, its routes and shots
+shotta snap <route…>       screenshot routes without writing a flow
+shotta snap --steps <src>  run steps given as JSON: a file, - for stdin, or the JSON itself
+shotta export [name…]      write the configured exports
+shotta stop                stop the app an earlier run left up
 
   --near <path>       only the flows closest to this source file or directory
   --route <prefix>    only flows that navigate to a route starting with this
-  --profiles <names>  comma-separated profiles to run (default: all configured)
+  --profiles <names>  comma-separated profiles to run (default: the config's, or
+                      each flow's own)
   --agent             output for a model to read: 1x images, tall pages cut into
                       tiles, no video, and only the JSON report on stdout
   --scale <n>         device scale factor for every profile, e.g. 3 for print
@@ -268,12 +363,19 @@ shots stop                stop the app an earlier run left up
   --no-video          skip journey.webm
   --video             record it even where the config or snap would not
   --headed            show the browser
-  --out <dir>         output directory
+  --out <dir>         output directory, for this run only
+  --tmp               write to a new directory under the system's temp folder
   --base-url <url>    use an already-running app instead of starting one
   --config <file>     config file
   --json              print the report as JSON on stdout; progress goes to stderr
   --name <name>       snap: the flow name its output goes under (default snap)
 ```
+
+For output you will look at once, or move somewhere yourself, send it elsewhere:
+`--out /tmp/look` writes to that directory, and `--tmp` makes a fresh one under the
+system's temp folder and reports it as `outDir`. Either way the project's `.shotta/`
+is left alone, and the app `shotta` is keeping up is still found and used. Since every
+`--tmp` run gets its own directory, runs side by side cannot overwrite each other.
 
 A failed pass never stops the others: narrow profiles are expected to find real
 breakage, and the list of what broke where is the point of the run. Exit code is `0`
@@ -281,18 +383,18 @@ when every pass succeeded, `1` when any failed, `2` when the run could not start
 
 ### snap
 
-`shots snap` is for looking at the app without committing a flow. Given routes, it
+`shotta snap` is for looking at the app without committing a flow. Given routes, it
 loads and shoots each one, naming the shot for the route:
 
 ```sh
-shots snap / /settings/billing     # → .shots/review/snap/<profile>/01-index.png, 02-settings-billing.png
+shotta snap / /settings/billing     # → .shotta/review/snap/<profile>/01-index.png, 02-settings-billing.png
 ```
 
 Given steps, it runs them as a flow — an array of steps, or
-`{ "steps": [...], "shows": …, "video": …, "cursor": …, "pace": … }`:
+`{ "steps": [...], "shows": …, "video": …, "cursor": …, "pace": …, "profiles": … }`:
 
 ```sh
-shots snap --name filters --steps - <<'JSON'
+shotta snap --name filters --steps - <<'JSON'
 [
   { "goto": "/portfolio" },
   { "annotate": "Narrow to flood risk", "steps": [
@@ -312,8 +414,9 @@ video unless `--video` is passed. Two snaps at once need different `--name`s.
 
 Output is in levels, each cheaper than the next, each answering whether to go deeper:
 
-1. **The catalog** (`shots list --json`) — text. Which flows exist, what each claims to
-   show, the routes it visits, its shots by address. Enough to choose what to run.
+1. **The catalog** (`shotta list --json`) — text. Which flows exist, what each claims to
+   show, the routes it visits, the profiles it runs at, its shots by address. Enough
+   to choose what to run.
 2. **The report** — text. What ran, what passed, where each file is; for a failure,
    the step, the error, the console errors and the page's accessibility tree.
 3. **The storyboard** — one image per flow. The whole journey at a glance.
@@ -330,8 +433,8 @@ stdout. Paths are absolute.
   "ok": false,
   "startedAt": "2026-11-20T17:40:00.000Z",
   "durationMs": 8412,
-  "outDir": "/repo/.shots/review",
-  "report": "/repo/.shots/review/runs/20261120T174000000Z-4242.json",
+  "outDir": "/repo/.shotta/review",
+  "report": "/repo/.shotta/review/runs/20261120T174000000Z-4242.json",
   "passes": [
     {
       "flow": "checkout",
@@ -342,23 +445,31 @@ stdout. Paths are absolute.
         {
           "name": "cart",
           "shows": "Two items and their total",
+          "area": "page",
           "chapter": null,
           "step": 2,
-          "file": "/repo/.shots/review/checkout/phone/01-cart.png",
+          "file": "/repo/.shotta/review/checkout/phone/01-cart.png",
           "tiles": []
         }
       ],
-      "video": "/repo/.shots/review/checkout/phone/journey.webm",
-      "storyboard": ["/repo/.shots/review/checkout/phone/storyboard.png"],
+      "video": "/repo/.shotta/review/checkout/phone/journey.webm",
+      "storyboard": ["/repo/.shotta/review/checkout/phone/storyboard.png"],
       "consoleErrors": ["TypeError: card is undefined"],
+      "unsettled": [
+        {
+          "step": 1,
+          "action": "goto /cart",
+          "waitingOn": ["request /api/recommendations?for=cart"]
+        }
+      ],
       "failure": {
         "step": 3,
         "action": "click role=button[name=\"Checkout\"]",
         "chapter": "Pay with a saved card",
         "message": "locator.click: Timeout 30000ms exceeded. …",
         "url": "http://localhost:51234/cart",
-        "screenshot": "/repo/.shots/review/checkout/phone/failure.png",
-        "aria": "/repo/.shots/review/checkout/phone/failure.aria.yml"
+        "screenshot": "/repo/.shotta/review/checkout/phone/failure.png",
+        "aria": "/repo/.shotta/review/checkout/phone/failure.aria.yml"
       }
     }
   ]
@@ -372,14 +483,16 @@ they were asked for or finished.
 is the page's accessibility tree at that moment, as YAML — the roles and names a
 selector could have matched, which is usually enough to see why one did not.
 `consoleErrors` holds uncaught exceptions and `console.error` output from the page
-(the first 20).
+(the first 20). `unsettled` lists the steps the page never went quiet after, and what
+each was still waiting on: every one cost the pass a full settle timeout, so a pass
+that is slow for no visible reason is explained here.
 
 ### The storyboard
 
 `storyboard` is the journey as a contact sheet: one frame of the viewport per step
 that changed something, captioned with the steps it stands for, the shots taken of
 that state, and what the shot `shows` (or else the chapter), with a ring where the
-step pressed. A step that changed nothing visible (a `wait`, a `shot`) joins the frame
+step pressed if what it pressed is still on screen. A step that changed nothing visible (a `wait`, a `shot`) joins the frame
 before it, and a failed step's frame is outlined in red with its error. Long journeys
 run to several pages (`storyboard.1.png`, …); every page fits what a vision model
 reads at full detail. Frames are small — read a shot for detail. A flow that only
@@ -387,7 +500,7 @@ loads a route and shoots it has no storyboard.
 
 ### Output for a model
 
-`--agent` writes to `.shots/agent/` instead of `.shots/review/`, so looking at a
+`--agent` writes to `.shotta/agent/` instead of `.shotta/review/`, so looking at a
 screen never overwrites what a person will open. Images are 1x; `shots[].tiles` lists
 each page top to bottom in pieces at most 1568 pixels tall, overlapping slightly — a
 vision model scales a taller image down until its text is unreadable. A page that
@@ -399,7 +512,7 @@ full-size shots, storyboard and video for a person.
 ## From code
 
 ```ts
-import { listFlows, run, snap, stop } from 'shots';
+import { exportShots, listFlows, run, snap, stop } from 'shotta';
 
 const result = await run({ targets: ['checkout/cart@phone'] });
 const look = await snap({ paths: ['/cart'], agent: true });
@@ -412,13 +525,13 @@ const look = await snap({ paths: ['/cart'], agent: true });
 Put something like this in the project's `AGENTS.md`:
 
 > To see a screen you changed, find the flow that shows it:
-> `pnpm shots list --near <file you changed> --json` (or `--route <route>`). Run what
+> `pnpm shotta list --near <file you changed> --json` (or `--route <route>`). Run what
 > you need in one command — several targets run side by side:
-> `pnpm shots checkout/cart@desktop settings@phone --agent`. Read
+> `pnpm shotta checkout/cart@desktop settings@phone --agent`. Read
 > `passes[].storyboard` first: one image shows a whole journey. Then read
 > `passes[].shots[].tiles` for the states that need a closer look, and check each
-> against its `shows`. For a screen with no flow, use `pnpm shots snap <route> --agent`,
-> or pipe steps as JSON to `pnpm shots snap --steps - --agent`. If `ok` is false, read
+> against its `shows`. For a screen with no flow, use `pnpm shotta snap <route> --agent`,
+> or pipe steps as JSON to `pnpm shotta snap --steps - --agent`. If `ok` is false, read
 > `failure.message` and `failure.aria` (then `failure.screenshot` and
 > `consoleErrors`) before changing anything. When you are done, run the same targets
 > without `--agent` and give the user the storyboard and video paths. A screen's

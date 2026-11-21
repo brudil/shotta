@@ -1,4 +1,4 @@
-import { defineFlow } from 'shots';
+import { defineFlow } from 'shotta';
 
 export default defineFlow({
   shows: 'The home page, its details panel, and the way through to About',
@@ -7,6 +7,8 @@ export default defineFlow({
     // Both come from the config: the flag is set before the app boots, and the
     // dev overlay is hidden in every shot.
     { wait: 'html[data-mock=on]' },
+    // From the config's setup, which ran before this flow's first step.
+    { wait: 'html[data-user=ada]' },
     {
       label: 'the dev overlay is hidden',
       run: async (page): Promise<void> => {

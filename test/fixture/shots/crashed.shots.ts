@@ -1,4 +1,4 @@
-import { defineFlow } from 'shots';
+import { defineFlow } from 'shotta';
 
 export default defineFlow({
   steps: [{ goto: '/crashed.html' }, { shot: 'never-taken' }],

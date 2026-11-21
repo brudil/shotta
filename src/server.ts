@@ -173,7 +173,7 @@ async function logTail(file: string): Promise<string> {
  * is used as it is; otherwise it is started and left up in turn, so that runs
  * one after another — or side by side — pay for the startup once.
  *
- * Only an app `shots` itself started is ever reused, and only while the
+ * Only an app `shotta` itself started is ever reused, and only while the
  * command that started it is still the configured one. A server the developer
  * has running is never touched: it may be another checkout or environment.
  */

@@ -1,4 +1,4 @@
-`shots`: a CLI and library that runs scripted flows through a web app with Playwright
+`shotta`: a CLI and library that runs scripted flows through a web app with Playwright
 and writes checkpoint screenshots and journey videos. README.md is the user-facing
 reference; keep it in step with any change to the flow steps, config keys, flags or
 the run report.
@@ -16,7 +16,7 @@ Layout:
 - `src/flow.ts`, `src/config.ts` — the two public vocabularies (steps, config keys) and
   the pure logic over them. `resolveConfig` takes Playwright's device list as an
   argument so it is testable without a browser.
-- `src/run.ts` → `src/run-flow.ts` — the run (`run`, `snap`, `listFlows`), then one
+- `src/run.ts` → `src/run-flow.ts` — the run (`run`, `snap`, `exportShots`, `listFlows`), then one
   flow at one profile. `checkSteps` in `flow.ts` validates every flow before it runs;
   a new step or step key has to be taught to it as well as to `perform`.
 - `src/settle.ts` — when a page counts as still. `src/steps.ts` — performing a step,
@@ -41,11 +41,16 @@ Things that are easy to get wrong:
 - Flows and configs in a consuming project are loaded by Node's type stripping, which
   does not apply inside `node_modules`. So this package ships compiled JS, and what a
   project imports from it must work from `dist/`.
-- The fixture imports the package by name (`from 'shots'`), which resolves to `dist/`.
+- The fixture imports the package by name (`from 'shotta'`), which resolves to `dist/`.
   Build before running the CLI against it by hand.
-- Anything that changes the page only to take a screenshot (hiding the overlays, a
-  full-page capture) must happen inside `recorder.pause()` … `resume()`, or it shows
-  up in the video as a blink.
+- Anything that changes the page only to take a screenshot (hiding the overlays,
+  growing the viewport so a scrolling panel shows all it holds) must happen inside
+  `recorder.pause()` … `resume()`, and be undone before it, or it shows up in the
+  video as a blink.
+- A request's end is not always reported: one made as a document unloads gets neither
+  a `requestfinished` nor a `requestfailed`. `trackNetwork` in `src/settle.ts` drops a
+  replaced document's requests for that reason, and must still tell a new document
+  from a `pushState`, whose requests are the app's own data.
 - Nothing here may assume a single-page app: a click can be a full navigation, which
   tears down the document mid-step (see `acrossNavigation` in `src/settle.ts`).
 - Timing constants in `settle.ts`, `steps.ts` and `recorder.ts` were tuned against real

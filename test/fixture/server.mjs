@@ -1,4 +1,5 @@
-// A static server for the fixture site, plus one slow endpoint and one poller.
+// A static server for the fixture site, plus one slow endpoint, one poller,
+// an event stream, and a request nothing ever answers.
 import { readFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import path from 'node:path';
@@ -15,8 +16,15 @@ createServer(async (req, res) => {
     res.end(JSON.stringify(['Alpha', 'Beta', 'Gamma']));
     return;
   }
-  if (url.pathname === '/api/ping') {
-    // Held open: a poller that never goes quiet.
+  if (url.pathname === '/api/ping' || url.pathname === '/api/late') {
+    // Held open: a poller that never goes quiet, and what a page asks for as
+    // it is left.
+    return;
+  }
+  if (url.pathname === '/api/events') {
+    // Open for as long as the page is, as a live app's updates are.
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    res.write('data: hello\n\n');
     return;
   }
   const file = url.pathname === '/' ? '/index.html' : url.pathname;

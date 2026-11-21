@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Shell</title>
+    <style>
+      /* An app shell: the document is one screen tall, and the list scrolls
+         inside it. */
+      html, body { height: 100%; margin: 0; overflow: hidden; }
+      body { display: flex; font: 16px/1.5 system-ui, sans-serif; }
+      nav { width: 160px; background: #eef2ff; }
+      /* Scrolls too, but has a height of its own: no viewport fits it. */
+      #log { height: 320px; overflow: auto; }
+      #log div { height: 3000px; }
+      /* The padding lets the last row be scrolled up the screen, and grows
+         with the viewport: a shot keeps a little of it, not all. */
+      main { flex: 1; overflow: auto; padding-bottom: 40vh; }
+      .row { height: 60px; box-sizing: border-box; border-bottom: 1px solid #ddd; padding: 16px; }
+    </style>
+  </head>
+  <body>
+    <nav>
+      <div id="log"><div>Log</div></div>
+    </nav>
+    <main id="list"></main>
+    <script>
+      const list = document.getElementById('list');
+      for (let n = 1; n <= 30; n += 1) {
+        const row = document.createElement('div');
+        row.className = 'row';
+        row.id = `row-${n}`;
+        row.textContent = `Row ${n}`;
+        list.append(row);
+      }
+    </script>
+  </body>
+</html>

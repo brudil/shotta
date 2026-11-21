@@ -20,7 +20,7 @@ export type Selector = string;
  * a project fills it in beside the handlers in its config:
  *
  * ```ts
- * declare module 'shots' {
+ * declare module 'shotta' {
  *   interface CustomSteps { login: { as: string } }
  * }
  * ```
@@ -48,10 +48,18 @@ export type BuiltinStep =
    */
   | { wait: Selector | number }
   /**
-   * Checkpoint a full-page screenshot, named for the state it shows. `shows`
-   * says what a reader should find in it — the claim the shot is there to back.
+   * Checkpoint a screenshot — of the full page unless `of` or `viewport` says
+   * otherwise — named for the state it shows, uniquely within the flow. `shows`
+   * says what a reader should find in it: the claim the shot is there to back.
    */
-  | { shot: string; shows?: string }
+  | {
+      shot: string;
+      shows?: string;
+      /** Shoot only this element, rather than the whole page. */
+      of?: Selector;
+      /** Shoot only what is on screen, rather than the whole page. */
+      viewport?: boolean;
+    }
   /**
    * Anything the other steps cannot say, with the Playwright page in hand.
    * `label` names the step in the log and the run report.
@@ -87,6 +95,13 @@ export interface FlowOptions {
    * never draw one: a tap is marked by a ring instead.
    */
   cursor?: boolean;
+  /**
+   * The profiles this flow runs at, in place of the config's `run`: for a
+   * journey that only exists at some sizes, such as one through a layout a
+   * phone does not have. Names of configured profiles. A target can still ask
+   * for any profile by name (`flow@phone`).
+   */
+  profiles?: string[];
   steps: Step[];
 }
 
@@ -134,7 +149,7 @@ export const RESERVED_STEP_KEYS: readonly string[] = [
 /** The keys a step of each kind may carry beside the kind itself. */
 const EXTRA_KEYS: Partial<Record<BuiltinKind, string[]>> = {
   type: ['into', 'delay'],
-  shot: ['shows'],
+  shot: ['shows', 'of', 'viewport'],
   run: ['label'],
 };
 
@@ -258,6 +273,20 @@ function checkAction(step: unknown, at: string, custom: string[]): void {
       if (step.shows !== undefined && typeof step.shows !== 'string') {
         throw new Error(`${at}: shows takes a sentence`);
       }
+      if (
+        step.of !== undefined &&
+        (typeof step.of !== 'string' || step.of === '')
+      ) {
+        throw new Error(`${at}: of takes the selector of the element to shoot`);
+      }
+      if (step.viewport !== undefined && typeof step.viewport !== 'boolean') {
+        throw new Error(`${at}: viewport takes true or false`);
+      }
+      if (step.of !== undefined && step.viewport === true) {
+        throw new Error(
+          `${at}: a shot is of an element or of the viewport, not both`,
+        );
+      }
       break;
     case 'run':
       expect(typeof value === 'function', 'a function');
@@ -275,6 +304,17 @@ function checkAction(step: unknown, at: string, custom: string[]): void {
  */
 export function checkSteps(steps: unknown, custom: string[] = []): Step[] {
   if (!Array.isArray(steps)) throw new Error('steps must be an array');
+  // A shot is addressed as flow/shot, so its name has to be the only one.
+  const shots = new Set<string>();
+  const unique = (step: unknown, at: string): void => {
+    if (!isRecord(step) || typeof step.shot !== 'string') return;
+    if (shots.has(step.shot)) {
+      throw new Error(
+        `${at}: this flow already has a shot called ${step.shot}`,
+      );
+    }
+    shots.add(step.shot);
+  };
   steps.forEach((step, index) => {
     const at = `steps[${index}]`;
     if (isRecord(step) && 'annotate' in step) {
@@ -296,9 +336,11 @@ export function checkSteps(steps: unknown, custom: string[] = []): Step[] {
           throw new Error(`${innerAt}: a chapter cannot hold another chapter`);
         }
         checkAction(inner, innerAt, custom);
+        unique(inner, innerAt);
       });
     } else {
       checkAction(step, at, custom);
+      unique(step, at);
     }
   });
   return steps as Step[];

@@ -63,6 +63,43 @@ describe('resolveConfig', () => {
     expect(resolved.profiles[0]?.hasTouch).toBe(true);
   });
 
+  it("carries a profile's colour scheme, and refuses one that is neither", () => {
+    const withScheme = (colorScheme: string) =>
+      resolveConfig({
+        file: {
+          profiles: {
+            dark: { viewport: { width: 800, height: 600 }, colorScheme },
+          },
+        } as never,
+        cli: {},
+        knownDevices: KNOWN_DEVICES,
+      });
+
+    expect(withScheme('dark').profiles[0]?.colorScheme).toBe('dark');
+    expect(() => withScheme('sepia')).toThrow(
+      'profile dark: colorScheme is light or dark, not sepia',
+    );
+  });
+
+  it('keeps the setup a pass runs before its first step', () => {
+    const setup = async (): Promise<void> => {};
+
+    expect(
+      resolveConfig({ file: { setup }, cli: {}, knownDevices: KNOWN_DEVICES })
+        .setup,
+    ).toBe(setup);
+    expect(
+      resolveConfig({ file: {}, cli: {}, knownDevices: KNOWN_DEVICES }).setup,
+    ).toBeNull();
+    expect(() =>
+      resolveConfig({
+        file: { setup: 'sign in' } as never,
+        cli: {},
+        knownDevices: KNOWN_DEVICES,
+      }),
+    ).toThrow('setup must be a function');
+  });
+
   it('leaves a desktop preset on the mouse path', () => {
     const resolved = resolveConfig({
       file: {
@@ -94,7 +131,7 @@ describe('resolveConfig', () => {
 
   it('lets the command line override the output directory and video', () => {
     const resolved = resolveConfig({
-      file: { outDir: '.shots', video: true },
+      file: { outDir: '.shotta', video: true },
       cli: { outDir: '/tmp/out', video: false },
       knownDevices: KNOWN_DEVICES,
     });
@@ -291,5 +328,69 @@ describe('resolveConfig', () => {
 
     expect(keepAlive({ command: 'serve' })).toBe(600_000);
     expect(keepAlive({ command: 'serve', keepAlive: 0 })).toBe(0);
+  });
+  it('reads an export as a list of addresses or as file name → address', () => {
+    const resolved = resolveConfig({
+      file: {
+        exports: {
+          docs: { dir: 'docs/img', scale: 2, shots: ['cart/full@desktop'] },
+          hero: { dir: 'site', shots: { 'hero.png': 'cart/full@phone' } },
+        },
+      },
+      cli: {},
+      knownDevices: KNOWN_DEVICES,
+    });
+
+    expect(resolved.exports).toEqual([
+      {
+        name: 'docs',
+        dir: 'docs/img',
+        scale: 2,
+        shots: [
+          {
+            address: 'cart/full@desktop',
+            target: { flow: 'cart', shot: 'full', profile: 'desktop' },
+            file: null,
+          },
+        ],
+      },
+      {
+        name: 'hero',
+        dir: 'site',
+        scale: null,
+        shots: [
+          {
+            address: 'cart/full@phone',
+            target: { flow: 'cart', shot: 'full', profile: 'phone' },
+            file: 'hero.png',
+          },
+        ],
+      },
+    ]);
+  });
+
+  it('rejects an export it could not write', () => {
+    const withExport = (entry: object) => () =>
+      resolveConfig({
+        file: { exports: { docs: entry } } as never,
+        cli: {},
+        knownDevices: KNOWN_DEVICES,
+      });
+
+    expect(withExport({ shots: ['cart/full'] })).toThrow(
+      'exports.docs needs a dir to write to',
+    );
+    expect(withExport({ dir: 'out', shots: ['cart'] })).toThrow(
+      'exports.docs: cart names a flow; an export needs flow/shot',
+    );
+    expect(withExport({ dir: 'out', shots: [] })).toThrow(
+      'exports.docs has no shots',
+    );
+    expect(
+      withExport({ dir: 'out', shots: { 'img/hero.png': 'cart/full' } }),
+    ).toThrow('exports.docs: img/hero.png must be a .png file name');
+    expect(withExport({ dir: 'out', scale: 0, shots: ['cart/full'] })).toThrow(
+      'exports.docs.scale must be a positive number',
+    );
   });
 });

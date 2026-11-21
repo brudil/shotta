@@ -48,6 +48,50 @@ export function matchFlows(names: string[], target: Target): string[] {
   return names.filter((name) => name.includes(target.flow));
 }
 
+/** The profiles a project has, and which of them a run uses. */
+export interface Profiles {
+  /** The profiles a run uses unless a flow or a target names others. */
+  profiles: ResolvedProfile[];
+  /** Every configured profile, in the order written. */
+  available: ResolvedProfile[];
+  /** True when the command line chose `profiles`. */
+  profilesChosen?: boolean;
+}
+
+/**
+ * The profiles a flow runs at when a target names none: the run's, or the
+ * flow's own if it lists any, in the order configured. The command line
+ * narrows either: a flow that is only for the desktop does not run when only
+ * the phone was asked for.
+ */
+export function profilesFor(
+  flow: Pick<Flow, 'name' | 'profiles'>,
+  { profiles, available, profilesChosen = false }: Profiles,
+): ResolvedProfile[] {
+  const own = flow.profiles;
+  if (own === undefined) return profiles;
+  if (
+    !Array.isArray(own) ||
+    own.length === 0 ||
+    own.some((name) => typeof name !== 'string')
+  ) {
+    throw new Error(`${flow.name}: profiles takes a list of profile names`);
+  }
+  const stranger = own.find(
+    (name) => !available.some((profile) => profile.name === name),
+  );
+  if (stranger !== undefined) {
+    throw new Error(
+      `${flow.name}: unknown profile: ${stranger} (have: ${available.map((p) => p.name).join(', ')})`,
+    );
+  }
+  return available.filter(
+    (profile) =>
+      own.includes(profile.name) &&
+      (!profilesChosen || profiles.includes(profile)),
+  );
+}
+
 /**
  * Turn what was asked for into the passes to run, in a stable order: flows as
  * discovered, profiles as configured. Targets naming the same flow and profile
@@ -55,15 +99,17 @@ export function matchFlows(names: string[], target: Target): string[] {
  */
 export function planPasses(
   flows: Flow[],
-  {
-    profiles: defaults,
-    available,
-  }: { profiles: ResolvedProfile[]; available: ResolvedProfile[] },
+  config: Profiles,
   targets: Target[],
 ): Pass[] {
+  const { available } = config;
+  // Each flow's own profiles are checked whether or not a target uses them.
+  const defaults = new Map(
+    flows.map((flow) => [flow.name, profilesFor(flow, config)]),
+  );
   if (targets.length === 0) {
     return flows.flatMap((flow) =>
-      defaults.map((profile) => ({ flow, profile })),
+      (defaults.get(flow.name) ?? []).map((profile) => ({ flow, profile })),
     );
   }
 
@@ -80,7 +126,7 @@ export function planPasses(
         `${formatTarget(target)} names a shot but matches several flows: ${matched.join(', ')}`,
       );
     }
-    let profiles = defaults;
+    let named: ResolvedProfile[] | null = null;
     if (target.profile !== null) {
       const profile = available.find((p) => p.name === target.profile);
       if (profile === undefined) {
@@ -88,9 +134,10 @@ export function planPasses(
           `unknown profile: ${target.profile} (have: ${available.map((p) => p.name).join(', ')})`,
         );
       }
-      profiles = [profile];
+      named = [profile];
     }
     for (const name of matched) {
+      const profiles = named ?? defaults.get(name) ?? [];
       if (target.shot !== null) {
         const flow = flows.find((f) => f.name === name) as Flow;
         const have = shotsOf(flow.steps).map((shot) => shot.name);

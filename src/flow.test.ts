@@ -184,3 +184,29 @@ describe('what a flow shows', () => {
     );
   });
 });
+
+describe('what a shot is of', () => {
+  it('can be one element or the viewport, but not both', () => {
+    expect(() =>
+      checkSteps([
+        { shot: 'card', of: '[data-testid=card]' },
+        { shot: 'fold', viewport: true },
+      ]),
+    ).not.toThrow();
+    expect(() => checkSteps([{ shot: 'a', of: '#a', viewport: true }])).toThrow(
+      'steps[0]: a shot is of an element or of the viewport, not both',
+    );
+    expect(() => checkSteps([{ shot: 'a', of: '' }])).toThrow(
+      'steps[0]: of takes the selector of the element to shoot',
+    );
+  });
+
+  it('has a name no other shot in the flow has, since it is its address', () => {
+    expect(() =>
+      checkSteps([
+        { shot: 'open' },
+        { annotate: 'Again', steps: [{ click: '#a' }, { shot: 'open' }] },
+      ]),
+    ).toThrow('steps[1].steps[1]: this flow already has a shot called open');
+  });
+});

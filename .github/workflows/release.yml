@@ -1,0 +1,61 @@
+name: Release
+
+# A v* tag stages the package on npm, as the version the tag says (v0.1.0
+# is 0.1.0), by trusted publishing: npm trusts this workflow in this repo,
+# and no token is stored anywhere. npm lets this workflow stage a version
+# and not publish one: a staged version isn't public until a maintainer
+# approves it, with `npm stage approve <stage-id>` and their 2FA. A pull
+# request that changes this file runs everything but the staging, to try it.
+on:
+  push:
+    tags: ["v*"]
+  pull_request:
+    paths: [".github/workflows/release.yml"]
+
+permissions:
+  contents: read
+  id-token: write # trusted publishing: npm takes the run's OIDC token
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest # trusted publishing needs GitHub's own runners
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: pnpm/action-setup@v4 # the version package.json's packageManager names
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          cache: pnpm
+
+      - run: npm install -g npm@^11.15.0 # npm stage needs 11.15.0 or later
+
+      - run: pnpm install --frozen-lockfile
+
+      # The version is the tag's: the repo holds 0.0.0 in package.json. A try
+      # is given a version that's never published: npm checks a dry run
+      # against what's there too.
+      - name: Take the version from the tag
+        run: |
+          case "$GITHUB_REF" in
+            refs/tags/v*) version="${GITHUB_REF_NAME#v}" ;;
+            *)            version="0.0.0-try" ;;
+          esac
+          npm version "$version" --no-git-tag-version
+
+      - run: pnpm typecheck
+
+      - run: pnpm test
+
+      - run: pnpm build
+
+      # It prints the stage's id, which `npm stage approve` takes.
+      - name: Publish
+        run: |
+          case "$GITHUB_REF" in
+            refs/tags/*-*) npm stage publish --tag next ;;    # v0.2.0-rc.1: a prerelease, not latest
+            refs/tags/*)   npm stage publish ;;
+            *)             npm stage publish --dry-run --tag try ;;
+          esac

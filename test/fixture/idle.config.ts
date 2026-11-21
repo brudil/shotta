@@ -1,9 +1,9 @@
-import { defineConfig } from 'shots';
+import { defineConfig } from 'shotta';
 
 /** The app is left up for barely a moment, to watch it idle out. */
 export default defineConfig({
   flows: 'shots',
-  outDir: '.shots-idle',
+  outDir: '.shotta-idle',
   actionTimeout: 1500,
   server: { command: 'node server.mjs', keepAlive: 1500 },
   profiles: {

@@ -5,10 +5,12 @@ export interface ShotResult {
   name: string;
   /** What the flow says a reader should find in it, if it says. */
   shows: string | null;
+  /** What it is a picture of: the whole page, what was on screen, or one element. */
+  area: 'page' | 'viewport' | 'element';
   chapter: string | null;
   /** 1-based position of the `shot` step in the flow. */
   step: number;
-  /** Absolute path of the full-page PNG. */
+  /** Absolute path of the PNG. */
   file: string;
   /**
    * With `--agent`, the same page top to bottom in pieces small enough for a
@@ -36,6 +38,19 @@ export interface FailureResult {
   aria: string | null;
 }
 
+/** A step the page was still busy after when the runner stopped waiting. */
+export interface UnsettledStep {
+  /** 1-based position of the step in the flow. */
+  step: number;
+  /** The step as the log shows it. */
+  action: string;
+  /**
+   * What was still busy, e.g. `request /api/events?topic=all` or `aria-busy on
+   * div.table`. A request named here belongs in the config's `ignoreRequests`.
+   */
+  waitingOn: string[];
+}
+
 /** One flow at one profile. */
 export interface PassResult {
   flow: string;
@@ -53,6 +68,11 @@ export interface PassResult {
   storyboard: string[];
   /** Uncaught exceptions and `console.error` output from the page, oldest first. */
   consoleErrors: string[];
+  /**
+   * The steps the page never went quiet after, each costing the pass a full
+   * settle timeout before it carried on. Empty when every step settled.
+   */
+  unsettled: UnsettledStep[];
   failure: FailureResult | null;
 }
 
@@ -77,6 +97,28 @@ export interface FlowSummary {
   /** The routes it navigates to. */
   routes: string[];
   chapters: string[];
+  /** The profiles it runs at when a target names none: the run's, or its own. */
+  profiles: string[];
   /** Each addressable as `<flow>/<shot>`. */
   shots: { name: string; shows: string | null }[];
+}
+
+/** One file an export wrote. */
+export interface ExportedFile {
+  /** The export it belongs to. */
+  export: string;
+  /** The shot, in full: `flow/shot@profile`. */
+  address: string;
+  /** Absolute path of the file written. */
+  file: string;
+}
+
+export interface ExportResult {
+  /** Every shot asked for was taken and written. */
+  ok: boolean;
+  files: ExportedFile[];
+  /** Shots that were asked for and could not be taken. */
+  missing: { export: string; address: string }[];
+  /** The run behind each export, in order: where to look when something is missing. */
+  runs: RunResult[];
 }

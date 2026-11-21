@@ -64,6 +64,8 @@ export function installOverlays(options: OverlayOptions): void {
         z-index: 2147483647; max-width: 60%;
         padding: 10px 18px; border-radius: 9999px;
         background: rgba(17, 24, 39, 0.82); color: #fff;
+        /* An edge of its own: over a dark theme the fill alone disappears. */
+        box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.3);
         font: 500 16px/1.3 system-ui, sans-serif;
         opacity: 0; transition: opacity 180ms ease;
       }
@@ -105,7 +107,7 @@ export function installOverlays(options: OverlayOptions): void {
 
     document.body.append(cursor, pill);
 
-    let pressed: Point | null = null;
+    let pressed: { point: Point; on: Element | null } | null = null;
     const api: ShotsApi = {
       setAnnotation: (text) => {
         pill.textContent = text ?? '';
@@ -120,9 +122,21 @@ export function installOverlays(options: OverlayOptions): void {
         }
       },
       takePress: () => {
-        const point = pressed;
+        const press = pressed;
         pressed = null;
-        return point;
+        if (press === null) return null;
+        // A press that took the app somewhere else landed on something the
+        // screen no longer shows; a mark there would point at nothing. What
+        // was pressed has to be there still, and still under that point.
+        const { point, on } = press;
+        if (on === null || !on.isConnected) return null;
+        const box = on.getBoundingClientRect();
+        const under =
+          point.x >= box.left &&
+          point.x <= box.right &&
+          point.y >= box.top &&
+          point.y <= box.bottom;
+        return under ? point : null;
       },
       pulse: (x, y) => {
         const ring = document.createElement('div');
@@ -141,7 +155,10 @@ export function installOverlays(options: OverlayOptions): void {
     document.addEventListener(
       'pointerdown',
       (event) => {
-        pressed = { x: event.clientX, y: event.clientY };
+        pressed = {
+          point: { x: event.clientX, y: event.clientY },
+          on: event.target instanceof Element ? event.target : null,
+        };
       },
       true,
     );
@@ -171,9 +188,10 @@ export async function setAnnotation(
 }
 
 /**
- * Where the page was last pressed since this was last asked, if it was. A
- * press that navigated away took its record with it, which is right: the new
- * page has nothing at that point to mark.
+ * Where the page was last pressed since this was last asked, if it was and
+ * what was pressed is still there. A press that loaded a new document took its
+ * record with it, and one that only changed the route is dropped when the
+ * element it landed on has gone: either way there is nothing left to mark.
  */
 export async function takePress(page: Page): Promise<Point | null> {
   return page.evaluate(

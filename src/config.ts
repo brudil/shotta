@@ -7,6 +7,7 @@
 import type { Page } from 'playwright';
 
 import { type CustomSteps, RESERVED_STEP_KEYS, type Selector } from './flow.js';
+import { parseTarget, type Target } from './targets.js';
 
 /** A viewport profile as written in the config file. */
 export interface ProfileConfig {
@@ -15,6 +16,8 @@ export interface ProfileConfig {
   /** Overrides the preset's viewport, or stands alone for a custom profile. */
   viewport?: { width: number; height: number };
   deviceScaleFactor?: number;
+  /** What the page is told the system prefers, for an app with a dark theme. */
+  colorScheme?: 'light' | 'dark';
 }
 
 export interface ServerConfig {
@@ -54,11 +57,49 @@ export type StepHandlers = {
   ) => Promise<void>;
 };
 
+/**
+ * What a pass does before its flow's first step, in the fresh browser context
+ * every pass gets: signing in, say.
+ */
+export type Setup = (
+  page: Page,
+  pass: {
+    /** Where the app is, without a trailing slash. */
+    baseUrl: string;
+    /** The name of the profile this pass runs at. */
+    profile: string;
+  },
+) => Promise<void>;
+
 /** The handlers as the runner sees them, once the step names are only strings. */
 export type AnyStepHandlers = Record<
   string,
   (page: Page, value: unknown) => Promise<void>
 >;
+
+/**
+ * A set of shots written out under stable names, for use outside the project's
+ * scratch output: a docs site, a marketing page, a README.
+ */
+export interface ExportConfig {
+  /** The directory the files are written to. */
+  dir: string;
+  /** Device scale factor to shoot at. Default: each profile's own. */
+  scale?: number;
+  /**
+   * The shots, each `flow/shot` or `flow/shot@profile`. As a list, files are
+   * named `<flow>.<shot>.<profile>.png`. As a map of file name → address, each
+   * address must come to one profile.
+   */
+  shots: string[] | Record<string, string>;
+}
+
+export interface ResolvedExport {
+  name: string;
+  dir: string;
+  scale: number | null;
+  shots: { address: string; target: Target; file: string | null }[];
+}
 
 export interface ShotsConfig {
   /**
@@ -66,7 +107,7 @@ export interface ShotsConfig {
    * whole project, so a flow can sit beside the code it shows.
    */
   flows?: string;
-  /** Where shots and videos are written. Default `.shots`. */
+  /** Where shots and videos are written. Default `.shotta`. */
   outDir?: string;
   /** Pause between steps in ms. Default 200. */
   pace?: number;
@@ -104,6 +145,15 @@ export interface ShotsConfig {
    * They are functions, so they need a `.ts` or `.js` config.
    */
   steps?: StepHandlers;
+  /**
+   * Run once per pass, before its first step and before any recording starts.
+   * Every pass begins in a browser with no cookies and no storage, so an app
+   * behind a sign-in is signed in to here — which is also what lets `shotta
+   * snap` shoot its routes. A function, so it needs a `.ts` or `.js` config.
+   */
+  setup?: Setup;
+  /** Named sets of shots for `shotta export`. */
+  exports?: Record<string, ExportConfig>;
 }
 
 /** Overrides from the command line. Any key left out defers to the file. */
@@ -134,6 +184,7 @@ export interface ResolvedProfile {
   device: string | null;
   viewport: { width: number; height: number } | null;
   deviceScaleFactor: number | null;
+  colorScheme: 'light' | 'dark' | null;
   /** True for device presets that emulate touch, which tap rather than click. */
   hasTouch: boolean;
 }
@@ -141,20 +192,31 @@ export interface ResolvedProfile {
 export interface ResolvedConfig {
   flows: string;
   outDir: string;
+  /**
+   * Where shotta keeps track of the app it is keeping up. Always the project's
+   * own output directory: sending one run's output elsewhere must not make it
+   * lose sight of the app, and start another.
+   */
+  stateDir: string;
   pace: number;
   video: boolean;
   storyboard: boolean;
   actionTimeout: number;
   workers: number;
-  /** The profiles a run uses unless a target names another. */
+  /** The profiles a run uses unless a flow or a target names others. */
   profiles: ResolvedProfile[];
+  /**
+   * True when the command line chose `profiles`. A flow with profiles of its
+   * own then runs only at those of them that were chosen.
+   */
+  profilesChosen: boolean;
   /** Every configured profile, in the order written. */
   available: ResolvedProfile[];
   /**
    * The directory under `outDir` this run writes to. Agent output is kept
    * apart, so looking at a screen never overwrites what a person will open.
    */
-  root: 'review' | 'agent';
+  root: 'review' | 'agent' | 'export';
   baseUrl: string | null;
   server: Required<ServerConfig> | null;
   localStorage: Record<string, string>;
@@ -162,6 +224,8 @@ export interface ResolvedConfig {
   ignoreRequests: (string | RegExp)[];
   failWhen: FailWhen[];
   steps: AnyStepHandlers;
+  setup: Setup | null;
+  exports: ResolvedExport[];
   /** Shots taller than this many image pixels are also cut into tiles; null for never. */
   tileHeight: number | null;
 }
@@ -180,7 +244,7 @@ const DESKTOP: ProfileConfig = {
 /** Used for anything the config file leaves out, so the tool works without one. */
 export const DEFAULT_CONFIG = {
   flows: '.',
-  outDir: '.shots',
+  outDir: '.shotta',
   pace: 200,
   video: true,
   storyboard: true,
@@ -210,9 +274,47 @@ const KNOWN_KEYS: Record<keyof ShotsConfig, true> = {
   ignoreRequests: true,
   failWhen: true,
   steps: true,
+  setup: true,
+  exports: true,
 };
 
-/** Type helper for `shots.config.ts`. */
+function resolveExport([name, config]: [string, ExportConfig]): ResolvedExport {
+  const at = `exports.${name}`;
+  if (typeof config.dir !== 'string' || config.dir === '') {
+    throw new Error(`${at} needs a dir to write to`);
+  }
+  if (config.scale !== undefined && !(config.scale > 0)) {
+    throw new Error(`${at}.scale must be a positive number`);
+  }
+  if (typeof config.shots !== 'object' || config.shots === null) {
+    throw new Error(
+      `${at} needs shots: a list of addresses, or file name → address`,
+    );
+  }
+  const entries: [string | null, string][] = Array.isArray(config.shots)
+    ? config.shots.map((address) => [null, address])
+    : Object.entries(config.shots);
+  if (entries.length === 0) throw new Error(`${at} has no shots`);
+  return {
+    name,
+    dir: config.dir,
+    scale: config.scale ?? null,
+    shots: entries.map(([file, address]) => {
+      const target = parseTarget(address);
+      if (target.shot === null) {
+        throw new Error(
+          `${at}: ${address} names a flow; an export needs flow/shot`,
+        );
+      }
+      if (file !== null && !/^[^/\\]+\.png$/.test(file)) {
+        throw new Error(`${at}: ${file} must be a .png file name`);
+      }
+      return { address, target, file };
+    }),
+  };
+}
+
+/** Type helper for `shotta.config.ts`. */
 export function defineConfig(config: ShotsConfig): ShotsConfig {
   return config;
 }
@@ -247,11 +349,16 @@ export function resolveConfig({
   const steps = (file?.steps ?? {}) as AnyStepHandlers;
   for (const [name, handler] of Object.entries(steps)) {
     if (RESERVED_STEP_KEYS.includes(name)) {
-      throw new Error(`a project step cannot be called ${name}: shots uses it`);
+      throw new Error(
+        `a project step cannot be called ${name}: shotta uses it`,
+      );
     }
     if (typeof handler !== 'function') {
       throw new Error(`steps.${name} must be a function`);
     }
+  }
+  if (file?.setup !== undefined && typeof file.setup !== 'function') {
+    throw new Error('setup must be a function');
   }
 
   const profiles = file?.profiles ?? DEFAULT_CONFIG.profiles;
@@ -267,11 +374,21 @@ export function resolveConfig({
     if (profile.device !== undefined && preset === undefined) {
       throw new Error(`unknown device: ${profile.device}`);
     }
+    if (
+      profile.colorScheme !== undefined &&
+      profile.colorScheme !== 'light' &&
+      profile.colorScheme !== 'dark'
+    ) {
+      throw new Error(
+        `profile ${name}: colorScheme is light or dark, not ${profile.colorScheme}`,
+      );
+    }
     return {
       name,
       device: profile.device ?? null,
       viewport: profile.viewport ?? null,
       deviceScaleFactor: scale ?? profile.deviceScaleFactor ?? null,
+      colorScheme: profile.colorScheme ?? null,
       hasTouch: preset?.hasTouch ?? false,
     };
   });
@@ -301,12 +418,14 @@ export function resolveConfig({
   return {
     flows: file?.flows ?? DEFAULT_CONFIG.flows,
     outDir: cli.outDir ?? file?.outDir ?? DEFAULT_CONFIG.outDir,
+    stateDir: file?.outDir ?? DEFAULT_CONFIG.outDir,
     pace: cli.pace ?? file?.pace ?? DEFAULT_CONFIG.pace,
     video: cli.video ?? (agent ? false : (file?.video ?? DEFAULT_CONFIG.video)),
     storyboard: file?.storyboard ?? DEFAULT_CONFIG.storyboard,
     actionTimeout: file?.actionTimeout ?? DEFAULT_CONFIG.actionTimeout,
     workers,
     profiles: resolved,
+    profilesChosen: cli.profiles !== undefined,
     available,
     root: agent ? 'agent' : 'review',
     baseUrl: cli.baseUrl ?? file?.baseUrl ?? null,
@@ -325,6 +444,8 @@ export function resolveConfig({
     ignoreRequests: file?.ignoreRequests ?? [],
     failWhen: file?.failWhen ?? [],
     steps,
+    setup: file?.setup ?? null,
+    exports: Object.entries(file?.exports ?? {}).map(resolveExport),
     tileHeight: agent ? AGENT_TILE_HEIGHT : null,
   };
 }

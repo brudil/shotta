@@ -3,13 +3,15 @@
  * TypeScript config and flows, loaded by Node, importing the package by name.
  */
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync, rmSync } from 'node:fs';
 import { createServer } from 'node:net';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 
+import { PNG } from 'pngjs';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import type { FlowSummary, RunResult } from '../src/index.js';
+import type { ExportResult, FlowSummary, RunResult } from '../src/index.js';
 
 const fixture = path.join(import.meta.dirname, 'fixture');
 const cli = path.join(import.meta.dirname, '..', 'dist', 'cli.js');
@@ -32,15 +34,19 @@ function shotsWith(input: string | undefined, ...args: string[]): Outcome {
 const shots = (...args: string[]): Outcome => shotsWith(undefined, ...args);
 
 const relative = (file: string): string =>
-  path.relative(path.join(fixture, '.shots'), file);
+  path.relative(path.join(fixture, '.shotta'), file);
 
 const sleep = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
 
 beforeAll(() => {
-  rmSync(path.join(fixture, '.shots'), { recursive: true, force: true });
-  rmSync(path.join(fixture, '.shots-idle'), { recursive: true, force: true });
-  rmSync(path.join(fixture, '.shots-url'), { recursive: true, force: true });
+  rmSync(path.join(fixture, '.shotta'), { recursive: true, force: true });
+  rmSync(path.join(fixture, '.shotta-idle'), { recursive: true, force: true });
+  rmSync(path.join(fixture, '.shotta-url'), { recursive: true, force: true });
+  rmSync(path.join(fixture, '.shotta-exported'), {
+    recursive: true,
+    force: true,
+  });
 });
 
 // Runs leave the app up for each other; the suite must not leave it behind.
@@ -49,7 +55,7 @@ afterAll(() => {
   shots('stop', '--config', 'idle.config.ts');
 });
 
-describe('shots list', () => {
+describe('shotta list', () => {
   it('is a catalog: each flow, what it shows, where it goes, what it shoots', () => {
     const { status, stdout } = shots('list', '--json');
     const flows: FlowSummary[] = JSON.parse(stdout);
@@ -59,7 +65,16 @@ describe('shots list', () => {
       'crashed',
       'journey',
       'missing-target',
+      'shell',
       'still',
+    ]);
+    // A flow runs at the run's profiles unless it lists its own.
+    expect(flows.map((flow) => flow.profiles.join(' '))).toEqual([
+      'desktop phone',
+      'desktop phone',
+      'desktop phone',
+      'desktop',
+      'desktop phone',
     ]);
     expect(flows[1]).toMatchObject({
       shows: 'The home page, its details panel, and the way through to About',
@@ -84,12 +99,12 @@ describe('shots list', () => {
     const { stdout } = shots('list', '--near', 'shots/helpers/x.ts', '--json');
     const flows: FlowSummary[] = JSON.parse(stdout);
 
-    expect(flows).toHaveLength(4);
+    expect(flows).toHaveLength(5);
     expect(shots('list', '--near', 'site/index.html').status).toBe(2);
   });
 });
 
-describe('shots', () => {
+describe('shotta', () => {
   it('shoots a journey at every profile, with a storyboard and a video', () => {
     const { status, stdout, stderr } = shots('journey', '--json');
     const result: RunResult = JSON.parse(stdout);
@@ -104,6 +119,8 @@ describe('shots', () => {
     for (const pass of result.passes) {
       const dir = `review/journey/${pass.profile}`;
       expect(pass.failure).toBeNull();
+      // The site keeps an event stream open, and asks for more as it is left.
+      expect(pass.unsettled).toEqual([]);
       expect(pass.shots.map((shot) => relative(shot.file))).toEqual([
         `${dir}/01-home.png`,
         `${dir}/fill-in-the-form/02-details.png`,
@@ -129,9 +146,42 @@ describe('shots', () => {
 
     expect(status).toBe(0);
     expect(result.passes).toHaveLength(1);
-    expect(result.passes[0]?.shots).toHaveLength(1);
+    expect(
+      result.passes[0]?.shots.map((shot) => `${shot.name} ${shot.area}`),
+    ).toEqual(['about page', 'heading element', 'fold viewport']);
     expect(result.passes[0]?.video).toBeNull();
     expect(result.passes[0]?.storyboard).toEqual([]);
+  });
+
+  it('shoots all of a page that scrolls inside a fixed shell, then puts it back', () => {
+    const { status, stdout } = shots('shell', '--json');
+    const result: RunResult = JSON.parse(stdout);
+    const size = (file: string | undefined): string => {
+      const { width, height } = PNG.sync.read(readFileSync(file ?? ''));
+      return `${width}x${height}`;
+    };
+
+    // The flow's step fails if the viewport or the scroll were not restored.
+    expect(result.passes[0]?.failure).toBeNull();
+    expect(status).toBe(0);
+    // At its own profiles, not the run's.
+    expect(result.passes.map((pass) => pass.profile)).toEqual(['desktop']);
+    // Thirty rows of 60px and 64px of the padding under them, in a viewport
+    // of 600. The padding is 40% of the viewport, so it never all fits; and
+    // the log beside the rows scrolls further still, but has a height of its
+    // own and is left as it is.
+    expect(size(result.passes[0]?.shots[0]?.file)).toBe('800x1864');
+    expect(size(result.passes[0]?.shots[1]?.file)).toBe('800x600');
+    expect(existsSync(result.passes[0]?.video ?? '')).toBe(true);
+  });
+
+  it('exits 2 when no flow asked for runs at the profiles asked for', () => {
+    const { status, stderr } = shots('shell', '--profiles', 'phone');
+
+    expect(status).toBe(2);
+    expect(stderr).toContain('nothing to run at phone: shell runs at desktop');
+    // Asked for by name, the profile is the caller's business.
+    expect(shots('shell/whole@phone', '--no-video').status).toBe(0);
   });
 
   it('runs a flow only as far as the shot asked for', () => {
@@ -206,7 +256,7 @@ describe('shots', () => {
   });
 });
 
-describe('shots --agent', () => {
+describe('shotta --agent', () => {
   it('prints only the report: 1x shots in tiles, kept apart from review output', () => {
     const { status, stdout, stderr } = shots('journey@desktop', '--agent');
     const result: RunResult = JSON.parse(stdout);
@@ -232,7 +282,7 @@ describe('shots --agent', () => {
     // What the earlier, full-size run wrote for a person is still there.
     expect(
       existsSync(
-        path.join(fixture, '.shots/review/journey/phone/journey.webm'),
+        path.join(fixture, '.shotta/review/journey/phone/journey.webm'),
       ),
     ).toBe(true);
   });
@@ -259,13 +309,13 @@ describe('shots --agent', () => {
       'crashed@desktop 0 false',
       'journey@desktop 1 true',
       'journey@phone 2 true',
-      'still@desktop 1 true',
-      'still@phone 1 true',
+      'still@desktop 3 true',
+      'still@phone 3 true',
     ]);
   });
 });
 
-describe('shots snap', () => {
+describe('shotta snap', () => {
   it('shoots routes without a flow file, naming each shot for its route', () => {
     const { status, stdout } = shots(
       'snap',
@@ -314,6 +364,28 @@ describe('shots snap', () => {
     ]);
   });
 
+  it('signs in first, and tells the page the colour scheme of its profile', () => {
+    const sees = (profile: string, scheme: string): number | null =>
+      shots(
+        'snap',
+        '--agent',
+        '--name',
+        `scheme-${profile}-${scheme}`,
+        '--profiles',
+        profile,
+        '--steps',
+        JSON.stringify([
+          { goto: '/' },
+          { wait: 'html[data-user=ada]' },
+          { wait: `html[data-scheme=${scheme}]` },
+        ]),
+      ).status;
+
+    expect(sees('desktop', 'light')).toBe(0);
+    expect(sees('phone', 'dark')).toBe(0);
+    expect(sees('phone', 'light')).toBe(1);
+  });
+
   it('exits 2 on steps that are not steps, saying which', () => {
     const { status, stderr } = shots(
       'snap',
@@ -346,7 +418,7 @@ describe('the app server', () => {
   });
 
   it('stops by itself once no run has used it for a while', async () => {
-    const state = path.join(fixture, '.shots-idle', 'server.json');
+    const state = path.join(fixture, '.shotta-idle', 'server.json');
     const first = crashed('--config', 'idle.config.ts');
     expect(existsSync(state)).toBe(true);
     const keeper: number = JSON.parse(readFileSync(state, 'utf8')).keeper;
@@ -360,7 +432,7 @@ describe('the app server', () => {
   });
 });
 
-describe('shots --base-url', () => {
+describe('shotta --base-url', () => {
   const freePort = (): Promise<number> =>
     new Promise((resolve) => {
       const probe = createServer();
@@ -394,7 +466,7 @@ describe('shots --base-url', () => {
         '--base-url',
         url,
         '--out',
-        '.shots-url',
+        '.shotta-url',
         '--json',
       );
       const result: RunResult = JSON.parse(stdout);
@@ -403,7 +475,7 @@ describe('shots --base-url', () => {
       expect(new URL(result.passes[0]?.failure?.url ?? '').origin).toBe(url);
       // Nothing was started, so nothing was left up or written down.
       expect(stderr).not.toContain('starting');
-      expect(existsSync(path.join(fixture, '.shots-url/server.json'))).toBe(
+      expect(existsSync(path.join(fixture, '.shotta-url/server.json'))).toBe(
         false,
       );
       // The app is the caller's: still up after the run.
@@ -419,5 +491,103 @@ describe('shots --base-url', () => {
 
     expect(status).toBe(2);
     expect(stderr).toContain(`nothing answers at ${url}`);
+  });
+});
+
+describe('shotta export', () => {
+  /** Width and height from a PNG's header. */
+  const size = (file: string): { width: number; height: number } => {
+    const header = readFileSync(file);
+    return { width: header.readUInt32BE(16), height: header.readUInt32BE(20) };
+  };
+  const exported = (file: string): string =>
+    path.join(fixture, '.shotta-exported', file);
+
+  it('writes each set of shots at its scale, under stable names', () => {
+    const { status, stdout } = shots('export', '--json');
+    const result: ExportResult = JSON.parse(stdout);
+
+    expect(status).toBe(0);
+    expect(result.missing).toEqual([]);
+    expect(
+      result.files.map((file) => [
+        file.export,
+        file.address,
+        path.relative(fixture, file.file),
+      ]),
+    ).toEqual([
+      [
+        'docs',
+        'journey/home@desktop',
+        '.shotta-exported/docs/journey.home.desktop.png',
+      ],
+      [
+        'docs',
+        'still/heading@desktop',
+        '.shotta-exported/docs/still.heading.desktop.png',
+      ],
+      [
+        'docs',
+        'still/heading@phone',
+        '.shotta-exported/docs/still.heading.phone.png',
+      ],
+      ['hero', 'still/fold@phone', '.shotta-exported/hero.png'],
+    ]);
+
+    // The whole page of an 800-wide profile, at the export's 2x.
+    const home = size(exported('docs/journey.home.desktop.png'));
+    expect(home.width).toBe(1600);
+    expect(home.height).toBeGreaterThan(1200);
+    // One element, not the page around it.
+    const heading = size(exported('docs/still.heading.desktop.png'));
+    expect(heading.height).toBeLessThan(200);
+    // What was on screen, at the phone's own density.
+    expect(size(exported('hero.png'))).toEqual({ width: 1179, height: 1977 });
+
+    // Shot in scratch output of its own, not over anyone's review or agent files.
+    expect(relative(result.runs[0]?.outDir ?? '')).toBe('export');
+  });
+
+  it('writes only the exports named', () => {
+    const { status, stdout } = shots('export', 'hero', '--json');
+    const result: ExportResult = JSON.parse(stdout);
+
+    expect(status).toBe(0);
+    expect(result.files.map((file) => file.export)).toEqual(['hero']);
+  });
+
+  it('exits 2 on an export that is not configured, naming those that are', () => {
+    const { status, stderr } = shots('export', 'press-kit');
+
+    expect(status).toBe(2);
+    expect(stderr).toContain('no export called press-kit (have: docs, hero)');
+  });
+});
+
+describe('shotta --tmp', () => {
+  it('writes to a throwaway directory without losing track of the app', () => {
+    const before: RunResult = JSON.parse(
+      shots('crashed@desktop', '--json').stdout,
+    );
+    const { status, stdout } = shots('crashed@desktop', '--tmp', '--json');
+    const result: RunResult = JSON.parse(stdout);
+    const dir = path.dirname(result.outDir);
+    try {
+      expect(status).toBe(1);
+      expect(realpathSync(dir).startsWith(realpathSync(tmpdir()))).toBe(true);
+      expect(path.basename(dir)).toMatch(/^shotta-/);
+      expect(existsSync(result.passes[0]?.failure?.screenshot ?? '')).toBe(
+        true,
+      );
+      expect(result.passes[0]?.failure?.screenshot?.startsWith(dir)).toBe(true);
+      // The same app as the run before it: none was started for this one, and
+      // its bookkeeping stayed with the project.
+      expect(new URL(result.passes[0]?.failure?.url ?? '').origin).toBe(
+        new URL(before.passes[0]?.failure?.url ?? '').origin,
+      );
+      expect(existsSync(path.join(dir, 'server.json'))).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

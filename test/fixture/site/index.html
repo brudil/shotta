@@ -25,6 +25,10 @@
     <p id="footer">The end.</p>
     <script>
       document.documentElement.dataset.mock = localStorage.getItem('mock') ?? 'off';
+      document.documentElement.dataset.user =
+        /(?:^|; )user=([^;]*)/.exec(document.cookie)?.[1] ?? 'nobody';
+      document.documentElement.dataset.scheme =
+        matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
       document.getElementById('toggle').addEventListener('click', () => {
         document.getElementById('details').classList.add('open');
       });
@@ -38,6 +42,11 @@
         list.removeAttribute('aria-busy');
       });
       fetch('/api/ping').catch(() => {});
+      // Neither may hold up a flow. A stream stays open by design. And when it
+      // drops as the page is left, an app asks again for what it was showing:
+      // a request the browser never reports the end of.
+      const events = new EventSource('/api/events');
+      events.onerror = () => fetch('/api/late').catch(() => {});
     </script>
   </body>
 </html>

@@ -1,17 +1,20 @@
 #!/usr/bin/env node
-import { readFile } from 'node:fs/promises';
+import { mkdtemp, readFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { text } from 'node:stream/consumers';
 import { parseArgs } from 'node:util';
 
 import type { RunResult } from './report.js';
-import { listFlows, run, snap, stop } from './run.js';
+import { exportShots, listFlows, run, snap, stop } from './run.js';
 
-const HELP = `shots [run] [target…]     run flows: all of them, or the targets
-shots list [target…]      the catalog: each flow, what it shows, its routes and shots
-shots snap <route…>       screenshot routes without writing a flow
-shots snap --steps <src>  run steps given as JSON: a file, - for stdin, or the JSON itself
-shots stop                stop the app an earlier run left up
+const HELP = `shotta [run] [target…]     run flows: all of them, or the targets
+shotta list [target…]      the catalog: each flow, what it shows, its routes and shots
+shotta snap <route…>       screenshot routes without writing a flow
+shotta snap --steps <src>  run steps given as JSON: a file, - for stdin, or the JSON itself
+shotta export [name…]      write the configured exports: named shots, at a set
+                           scale, under stable file names
+shotta stop                stop the app an earlier run left up
 
 A target is flow, flow/shot, flow@profile or flow/shot@profile. A flow part
 that is not a flow's whole name selects every flow containing it; with a shot,
@@ -23,7 +26,8 @@ written beside them under runs/.
 
   --near <path>       only the flows closest to this source file or directory
   --route <prefix>    only flows that navigate to a route starting with this
-  --profiles <names>  comma-separated profiles to run (default: all configured)
+  --profiles <names>  comma-separated profiles to run (default: the config's, or
+                      each flow's own)
   --agent             output for a model to read: 1x images, tall pages cut into
                       tiles, no video, and only the JSON report on stdout
   --scale <n>         device scale factor for every profile, e.g. 3 for print
@@ -31,9 +35,11 @@ written beside them under runs/.
   --no-video          skip journey.webm
   --video             record it even where the config or snap would not
   --headed            show the browser
-  --out <dir>         output directory (default .shots)
+  --out <dir>         output directory (default .shotta), for this run only
+  --tmp               write to a new directory under the system's temp folder,
+                      for output to look at once or move; the report says where
   --base-url <url>    use an already-running app instead of starting one
-  --config <file>     config file (default: shots.config.{ts,js,json}, or in .config/)
+  --config <file>     config file (default: shotta.config.{ts,js,json}, or in .config/)
   --json              print the report as JSON on stdout; progress goes to stderr
   --name <name>       snap: the flow name its output goes under (default snap)
   -h, --help
@@ -41,7 +47,7 @@ written beside them under runs/.
 Exits 0 when every pass succeeded, 1 when any failed, 2 when the run could not start.
 Requires: playwright install chromium-headless-shell`;
 
-const COMMANDS = ['run', 'list', 'snap', 'stop'] as const;
+const COMMANDS = ['run', 'list', 'snap', 'export', 'stop'] as const;
 type Command = (typeof COMMANDS)[number];
 
 const { values, positionals } = parseArgs({
@@ -60,6 +66,7 @@ const { values, positionals } = parseArgs({
     scale: { type: 'string' },
     workers: { type: 'string' },
     out: { type: 'string' },
+    tmp: { type: 'boolean', default: false },
     'base-url': { type: 'string' },
     config: { type: 'string' },
     near: { type: 'string' },
@@ -94,10 +101,17 @@ const log = values.agent
 const number = (value: string | undefined): number | undefined =>
   value === undefined ? undefined : Number(value);
 
+if (values.tmp && values.out !== undefined) {
+  console.error('--tmp and --out both say where to write: pass one');
+  process.exit(2);
+}
+
 const common = {
   config: values.config,
   profiles: values.profiles?.split(',').map((name) => name.trim()),
-  outDir: values.out,
+  outDir: values.tmp
+    ? await mkdtemp(path.join(tmpdir(), 'shotta-'))
+    : values.out,
   // Absent flags defer to the config file; present, each forces its answer.
   video: values['no-video'] ? false : values.video ? true : undefined,
   baseUrl: values['base-url'],
@@ -161,6 +175,15 @@ try {
       (await stop(common)) ? 'stopped the app' : 'no app was running',
     );
     process.exit(0);
+  }
+
+  if (command === 'export') {
+    const result = await exportShots({ ...common, names: args });
+    if (json) console.log(JSON.stringify(result, null, 2));
+    for (const { address } of result.missing) {
+      console.error(`  ✗ ${address} was not taken`);
+    }
+    process.exit(result.ok ? 0 : 1);
   }
 
   if (command === 'list') {

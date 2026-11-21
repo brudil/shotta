@@ -1,5 +1,5 @@
 /**
- * Runs detached, outliving the `shots` that started it: owns the app server,
+ * Runs detached, outliving the `shotta` that started it: owns the app server,
  * and stops it once no run has used it for a while. Not imported by anything;
  * `server.ts` spawns it with its options as one JSON argument.
  */

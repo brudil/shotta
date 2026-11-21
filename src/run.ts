@@ -1,5 +1,12 @@
 /** The whole run: config, flows, server, browser, every pass. */
-import { mkdir, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import {
+  copyFile,
+  mkdir,
+  readdir,
+  rm,
+  stat,
+  writeFile,
+} from 'node:fs/promises';
 import { availableParallelism } from 'node:os';
 import path from 'node:path';
 
@@ -19,7 +26,13 @@ import {
   walk,
 } from './flow.js';
 import { findFlows, loadConfig, loadFlow } from './load.js';
-import type { FlowSummary, PassResult, RunResult } from './report.js';
+import type {
+  ExportedFile,
+  ExportResult,
+  FlowSummary,
+  PassResult,
+  RunResult,
+} from './report.js';
 import { records, runFlow } from './run-flow.js';
 import {
   ensureServer,
@@ -33,6 +46,7 @@ import {
   type Pass,
   parseTarget,
   planPasses,
+  profilesFor,
   type Target,
 } from './targets.js';
 
@@ -65,12 +79,17 @@ export interface SnapOptions extends CommonOptions {
   /** Routes to load and shoot, one shot each. */
   paths?: string[];
   /**
-   * A flow given as data instead: its steps, or `{ steps, shows?, video?, cursor?, pace? }`.
+   * A flow given as data instead: its steps, or `{ steps, shows?, video?, cursor?, pace?, profiles? }`.
    * Unchecked on purpose — this is what arrives as JSON, and it is validated here.
    */
   flow?: unknown;
   /** Names the output directory. Default `snap`. */
   name?: string;
+}
+
+export interface ExportOptions extends CommonOptions {
+  /** Which exports to write. Default: every one configured. */
+  names?: string[];
 }
 
 /** Reports kept per output root; older ones are removed. */
@@ -180,6 +199,7 @@ export async function listFlows(
       shows: flow.shows ?? null,
       routes: routesOf(flow.steps),
       chapters,
+      profiles: profilesFor(flow, config).map((profile) => profile.name),
       shots: shotsOf(flow.steps).map(({ name, shows }) => ({ name, shows })),
     };
   });
@@ -248,14 +268,18 @@ async function execute(
   let server: RunningServer;
   try {
     if (config.baseUrl !== null) {
-      // Given an app, shots manages none: nothing is started, and one it left
+      // Given an app, shotta manages none: nothing is started, and one it left
       // up earlier is neither used nor touched.
       if (!(await reachable(config.baseUrl))) {
         throw new Error(`nothing answers at ${config.baseUrl}`);
       }
       server = { baseUrl: config.baseUrl, stop: async () => {} };
     } else if (config.server !== null) {
-      server = await ensureServer(config.server, { cwd, outDir: root, log });
+      server = await ensureServer(config.server, {
+        cwd,
+        outDir: path.resolve(cwd, config.stateDir),
+        log,
+      });
     } else {
       throw new Error(
         'nothing to run against: set `server` or `baseUrl` in the config, or pass --base-url',
@@ -337,7 +361,19 @@ async function execute(
 export async function run(options: RunOptions = {}): Promise<RunResult> {
   const { cwd, config } = await configure(options);
   const { flows, targets } = await select(cwd, config, options);
-  return execute(cwd, config, planPasses(flows, config, targets), options);
+  const passes = planPasses(flows, config, targets);
+  if (passes.length === 0) {
+    // Only a flow's own profiles can leave nothing: every flow selected is
+    // for sizes the command line did not ask for.
+    const asked = config.profiles.map((profile) => profile.name).join(', ');
+    throw new Error(
+      `nothing to run at ${asked}: ${flows
+        .filter((flow) => flow.profiles !== undefined)
+        .map((flow) => `${flow.name} runs at ${flow.profiles?.join(', ')}`)
+        .join('; ')}`,
+    );
+  }
+  return execute(cwd, config, passes, options);
 }
 
 /** A route as a shot name: `/portfolio/actions?tab=mine` → `portfolio-actions-tab-mine`. */
@@ -388,7 +424,7 @@ export async function snap(options: SnapOptions): Promise<RunResult> {
       Array.isArray(given) ? { steps: given } : given
     ) as Partial<FlowOptions>;
     const stray = Object.keys(rest).find(
-      (key) => !['shows', 'video', 'cursor', 'pace'].includes(key),
+      (key) => !['shows', 'video', 'cursor', 'pace', 'profiles'].includes(key),
     );
     if (stray !== undefined) throw new Error(`a flow has no "${stray}"`);
     definition = {
@@ -401,10 +437,102 @@ export async function snap(options: SnapOptions): Promise<RunResult> {
 }
 
 /**
+ * Write the configured exports: shoot each one's shots at its scale, then copy
+ * them out under their stable names. Shooting happens in scratch output of its
+ * own, so an export never disturbs what a person or an agent last looked at,
+ * and a shot that could not be taken leaves the file already there untouched.
+ */
+export async function exportShots(
+  options: ExportOptions = {},
+): Promise<ExportResult> {
+  const log = options.log ?? (() => {});
+  const { config: base } = await configure(options);
+  if (base.exports.length === 0) {
+    throw new Error('no exports are configured: add `exports` to the config');
+  }
+  const have = base.exports.map((entry) => entry.name);
+  const names = options.names?.length ? options.names : have;
+  const stranger = names.find((name) => !have.includes(name));
+  if (stranger !== undefined) {
+    throw new Error(`no export called ${stranger} (have: ${have.join(', ')})`);
+  }
+
+  const result: ExportResult = { ok: true, files: [], missing: [], runs: [] };
+  for (const name of names) {
+    const entry = base.exports.find(
+      (e) => e.name === name,
+    ) as (typeof base.exports)[number];
+    const resolved = await configure({
+      ...options,
+      agent: false,
+      video: false,
+      scale: entry.scale ?? options.scale,
+    });
+    const { cwd } = resolved;
+    const config: ResolvedConfig = {
+      ...resolved.config,
+      storyboard: false,
+      root: 'export',
+    };
+
+    const { flows, targets } = await select(cwd, config, {
+      targets: entry.shots.map((shot) => shot.address),
+    });
+    const passes = planPasses(flows, config, targets);
+    const flowNames = flows.map((flow) => flow.name);
+    // Everything that can be wrong with the request is, before a browser opens.
+    const wanted = entry.shots.map(({ address, target, file }) => {
+      const flow = matchFlows(flowNames, target)[0] as string;
+      const profiles =
+        target.profile === null
+          ? profilesFor(
+              flows.find((candidate) => candidate.name === flow) as Flow,
+              config,
+            ).map((profile) => profile.name)
+          : [target.profile];
+      if (file !== null && profiles.length !== 1) {
+        throw new Error(
+          `exports.${name}: ${file} is one file, but ${address} is shot at ${profiles.join(' and ')} — name the profile`,
+        );
+      }
+      return { flow, shot: target.shot as string, profiles, file };
+    });
+
+    log(`▷ export ${name} → ${entry.dir}`);
+    const run = await execute(cwd, config, passes, options);
+    result.runs.push(run);
+    const dir = path.resolve(cwd, entry.dir);
+    await mkdir(dir, { recursive: true });
+    for (const { flow, shot, profiles, file } of wanted) {
+      for (const profile of profiles) {
+        const address = `${flow}/${shot}@${profile}`;
+        const taken = run.passes
+          .find((pass) => pass.flow === flow && pass.profile === profile)
+          ?.shots.find((candidate) => candidate.name === shot);
+        if (taken === undefined) {
+          result.missing.push({ export: name, address });
+          continue;
+        }
+        const written: ExportedFile = {
+          export: name,
+          address,
+          file: path.join(dir, file ?? `${flow}.${shot}.${profile}.png`),
+        };
+        await copyFile(taken.file, written.file);
+        result.files.push(written);
+        log(`  → ${path.relative(cwd, written.file)}`);
+      }
+    }
+  }
+  result.ok = result.missing.length === 0;
+  return result;
+}
+
+/**
  * Stop the app an earlier run left up.
  * @returns whether there was one
  */
 export async function stop(options: CommonOptions = {}): Promise<boolean> {
   const { cwd, config } = await configure(options);
-  return stopServer(path.resolve(cwd, config.outDir));
+  return stopServer(path.resolve(cwd, config.stateDir));
 }

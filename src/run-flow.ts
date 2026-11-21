@@ -61,6 +61,9 @@ function emulationFor(profile: ResolvedProfile) {
     ...(profile.deviceScaleFactor === null
       ? {}
       : { deviceScaleFactor: profile.deviceScaleFactor }),
+    ...(profile.colorScheme === null
+      ? {}
+      : { colorScheme: profile.colorScheme }),
   };
   if (!('viewport' in emulation) || !emulation.viewport) {
     throw new Error(`profile ${profile.name} resolved to no viewport`);
@@ -107,6 +110,7 @@ export async function runFlow(
     video: null,
     storyboard: [],
     consoleErrors: [],
+    unsettled: [],
     failure: null,
   };
   const noteConsoleError = (text: string): void => {
@@ -171,6 +175,15 @@ export async function runFlow(
       mouse: { x: 2, y: 2 },
     };
 
+    if (config.setup !== null) {
+      at.action = 'setup';
+      log('  · setup');
+      await config.setup(page, {
+        baseUrl: baseUrl.replace(/\/$/, ''),
+        profile: profile.name,
+      });
+    }
+
     let shotIndex = 0;
     let chapterShown: string | null = null;
     for (const { step, chapter } of walk(flow.steps)) {
@@ -185,8 +198,14 @@ export async function runFlow(
       }
       log(`  ${String(at.step).padStart(2, '0')} ${at.action}`);
       await perform(page, step, ctx);
-      if (!(await settle(page, network, { inert: 'shot' in step }))) {
-        log('     · the page never went quiet; carrying on');
+      const waitingOn = await settle(page, network, { inert: 'shot' in step });
+      if (waitingOn !== null) {
+        log(`     · the page never went quiet (${waitingOn.join(', ')})`);
+        result.unsettled.push({
+          step: at.step,
+          action: at.action,
+          waitingOn,
+        });
       }
       if (newDocument) {
         // Navigation destroyed the injected overlays; restore their state.
@@ -205,6 +224,7 @@ export async function runFlow(
         await page.waitForTimeout(VIDEO_LEAD_MS);
       }
       await assertNotFailed(page, config.failWhen);
+      const pressed = storyboard === null ? null : await takePress(page);
       storyboard?.add({
         step: at.step,
         action: at.action,
@@ -212,7 +232,7 @@ export async function runFlow(
         shot: 'shot' in step ? step.shot : undefined,
         shows: 'shot' in step ? (step.shows ?? null) : null,
         image: await page.screenshot({ scale: 'css' }),
-        press: await takePress(page),
+        press: pressed,
         failure: null,
       });
       if ('shot' in step) {
@@ -224,7 +244,13 @@ export async function runFlow(
           dir,
           `${String(shotIndex).padStart(2, '0')}-${step.shot}.png`,
         );
-        await capture(page, file, recorder);
+        const area =
+          step.of !== undefined
+            ? { of: step.of }
+            : step.viewport === true
+              ? 'viewport'
+              : 'page';
+        await capture(page, file, area, recorder, network);
         const tiles =
           config.tileHeight === null
             ? []
@@ -232,6 +258,7 @@ export async function runFlow(
         result.shots.push({
           name: step.shot,
           shows: step.shows ?? null,
+          area: typeof area === 'object' ? 'element' : area,
           chapter,
           step: at.step,
           file,

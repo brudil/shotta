@@ -7,7 +7,7 @@ import type { ShotsConfig } from './config.js';
 import type { Flow, FlowDefinition } from './flow.js';
 
 const CONFIG_NAMES = ['ts', 'mts', 'js', 'mjs', 'json'].map(
-  (extension) => `shots.config.${extension}`,
+  (extension) => `shotta.config.${extension}`,
 );
 /** Looked up in order; the project root wins over `.config/`. */
 const CONFIG_CANDIDATES = [
