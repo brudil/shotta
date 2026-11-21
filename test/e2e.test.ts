@@ -11,7 +11,12 @@ import path from 'node:path';
 import { PNG } from 'pngjs';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import type { ExportResult, FlowSummary, RunResult } from '../src/index.js';
+import type {
+  CheckResult,
+  ExportResult,
+  FlowSummary,
+  RunResult,
+} from '../src/index.js';
 
 const fixture = path.join(import.meta.dirname, 'fixture');
 const cli = path.join(import.meta.dirname, '..', 'dist', 'cli.js');
@@ -101,6 +106,43 @@ describe('shotta list', () => {
 
     expect(flows).toHaveLength(5);
     expect(shots('list', '--near', 'site/index.html').status).toBe(2);
+  });
+});
+
+describe('shotta check', () => {
+  it('passes a project with nothing wrong, without a browser or the app', () => {
+    const { status, stdout } = shots('check', '--json');
+    const result: CheckResult = JSON.parse(stdout);
+
+    expect(status).toBe(0);
+    expect(result).toMatchObject({ ok: true, flows: 5, exports: 2 });
+    expect(result.problems).toEqual([]);
+    expect(shots('check').stdout).toMatch(/^✓ 5 flows, \d+ shots, 2 exports$/m);
+  });
+
+  it('finds every mistake at once: steps, profiles and exports', () => {
+    const { status, stdout } = shots(
+      'check',
+      '--config',
+      'broken.config.ts',
+      '--json',
+    );
+    const result: CheckResult = JSON.parse(stdout);
+
+    expect(status).toBe(1);
+    expect(result).toMatchObject({ ok: false, flows: 1, shots: 1 });
+    expect(
+      result.problems.map(
+        ({ file, message }) =>
+          `${file === null ? 'config' : path.basename(file)}: ${message}`,
+      ),
+    ).toEqual([
+      'elsewhere.shots.mjs: elsewhere: unknown profile: watch (have: desktop)',
+      expect.stringMatching(
+        /^typo\.shots\.mjs: steps\[1\]: not a step: \{"clik":"#save"\}/,
+      ),
+      'config: exports.docs: fine has no shot called away (have: home)',
+    ]);
   });
 });
 

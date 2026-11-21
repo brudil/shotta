@@ -103,6 +103,24 @@ export interface FlowSummary {
   shots: { name: string; shows: string | null }[];
 }
 
+/** What `shotta check` found, without running anything. */
+export interface CheckResult {
+  /** Nothing is wrong: every flow would load and every export could be shot. */
+  ok: boolean;
+  /** How many flows there are that loaded and passed. */
+  flows: number;
+  /** How many shots those flows take between them. */
+  shots: number;
+  /** How many exports are configured. */
+  exports: number;
+  problems: {
+    /** Absolute path of the flow file at fault; null for the config or an export. */
+    file: string | null;
+    /** What is wrong, e.g. `steps[1]: not a step: {"clik":"#save"} (have: goto, …)`. */
+    message: string;
+  }[];
+}
+
 /** One file an export wrote. */
 export interface ExportedFile {
   /** The export it belongs to. */

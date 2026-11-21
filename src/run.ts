@@ -15,6 +15,7 @@ import { type Browser, chromium, devices } from 'playwright';
 import {
   type ConfigOverrides,
   type ResolvedConfig,
+  type ResolvedExport,
   resolveConfig,
 } from './config.js';
 import {
@@ -27,6 +28,7 @@ import {
 } from './flow.js';
 import { findFlows, loadConfig, loadFlow } from './load.js';
 import type {
+  CheckResult,
   ExportedFile,
   ExportResult,
   FlowSummary,
@@ -437,6 +439,124 @@ export async function snap(options: SnapOptions): Promise<RunResult> {
 }
 
 /**
+ * What an export asks for, set against the flows there are: the passes that
+ * take its shots, and each shot with the profiles it is wanted at. Throws on
+ * an address that names no flow, shot or profile, or one file for several.
+ */
+function planExport(
+  entry: ResolvedExport,
+  flows: Flow[],
+  config: ResolvedConfig,
+): {
+  passes: Pass[];
+  wanted: {
+    flow: string;
+    shot: string;
+    profiles: string[];
+    file: string | null;
+  }[];
+} {
+  const passes = planPasses(
+    flows,
+    config,
+    entry.shots.map((shot) => shot.target),
+  );
+  const flowNames = flows.map((flow) => flow.name);
+  const wanted = entry.shots.map(({ address, target, file }) => {
+    const flow = matchFlows(flowNames, target)[0] as string;
+    const profiles =
+      target.profile === null
+        ? profilesFor(
+            flows.find((candidate) => candidate.name === flow) as Flow,
+            config,
+          ).map((profile) => profile.name)
+        : [target.profile];
+    if (file !== null && profiles.length !== 1) {
+      throw new Error(
+        `exports.${entry.name}: ${file} is one file, but ${address} is shot at ${profiles.join(' and ')} — name the profile`,
+      );
+    }
+    return { flow, shot: target.shot as string, profiles, file };
+  });
+  return { passes, wanted };
+}
+
+/**
+ * Say what is wrong with the project's config, flows and exports, without a
+ * browser or the app: everything a run would refuse to start over, for every
+ * flow at once rather than the first. Never throws for what it finds.
+ */
+export async function check(options: CommonOptions = {}): Promise<CheckResult> {
+  const cwd = path.resolve(options.cwd ?? process.cwd());
+  const result: CheckResult = {
+    ok: false,
+    flows: 0,
+    shots: 0,
+    exports: 0,
+    problems: [],
+  };
+  const note = (file: string | null, error: unknown): void => {
+    result.problems.push({
+      file,
+      message: error instanceof Error ? error.message : String(error),
+    });
+  };
+
+  let config: ResolvedConfig;
+  try {
+    ({ config } = await configure(options));
+  } catch (error) {
+    // Nothing else can be read without it.
+    note(null, error);
+    return result;
+  }
+
+  const flows: Flow[] = [];
+  try {
+    const files = await findFlows(path.resolve(cwd, config.flows));
+    if (files.length === 0) {
+      throw new Error(
+        `no flows found in ${config.flows} (expected <name>.shots.ts)`,
+      );
+    }
+    const custom = Object.keys(config.steps);
+    for (const file of files) {
+      try {
+        const flow = await loadFlow(file);
+        checkSteps(flow.steps, custom);
+        profilesFor(flow, config);
+        flows.push(flow);
+      } catch (error) {
+        note(file.file, error);
+      }
+    }
+  } catch (error) {
+    note(null, error);
+  }
+
+  for (const entry of config.exports) {
+    try {
+      planExport(entry, flows, config);
+    } catch (error) {
+      const why = error instanceof Error ? error.message : String(error);
+      note(
+        null,
+        why.startsWith('exports.') ? why : `exports.${entry.name}: ${why}`,
+      );
+    }
+  }
+
+  result.flows = flows.length;
+  result.shots = flows.reduce(
+    (count, flow) => count + shotsOf(flow.steps).length,
+    0,
+  );
+  result.exports = config.exports.length;
+  result.ok = result.problems.length === 0;
+  return result;
+}
+
+/**
  * Write the configured exports: shoot each one's shots at its scale, then copy
  * them out under their stable names. Shooting happens in scratch output of its
  * own, so an export never disturbs what a person or an agent last looked at,
@@ -475,28 +595,11 @@ export async function exportShots(
       root: 'export',
     };
 
-    const { flows, targets } = await select(cwd, config, {
+    const { flows } = await select(cwd, config, {
       targets: entry.shots.map((shot) => shot.address),
     });
-    const passes = planPasses(flows, config, targets);
-    const flowNames = flows.map((flow) => flow.name);
     // Everything that can be wrong with the request is, before a browser opens.
-    const wanted = entry.shots.map(({ address, target, file }) => {
-      const flow = matchFlows(flowNames, target)[0] as string;
-      const profiles =
-        target.profile === null
-          ? profilesFor(
-              flows.find((candidate) => candidate.name === flow) as Flow,
-              config,
-            ).map((profile) => profile.name)
-          : [target.profile];
-      if (file !== null && profiles.length !== 1) {
-        throw new Error(
-          `exports.${name}: ${file} is one file, but ${address} is shot at ${profiles.join(' and ')} — name the profile`,
-        );
-      }
-      return { flow, shot: target.shot as string, profiles, file };
-    });
+    const { passes, wanted } = planExport(entry, flows, config);
 
     log(`▷ export ${name} → ${entry.dir}`);
     const run = await execute(cwd, config, passes, options);

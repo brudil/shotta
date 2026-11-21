@@ -16,7 +16,7 @@ Layout:
 - `src/flow.ts`, `src/config.ts` — the two public vocabularies (steps, config keys) and
   the pure logic over them. `resolveConfig` takes Playwright's device list as an
   argument so it is testable without a browser.
-- `src/run.ts` → `src/run-flow.ts` — the run (`run`, `snap`, `exportShots`, `listFlows`), then one
+- `src/run.ts` → `src/run-flow.ts` — the run (`run`, `snap`, `exportShots`, `listFlows`, `check`), then one
   flow at one profile. `checkSteps` in `flow.ts` validates every flow before it runs;
   a new step or step key has to be taught to it as well as to `perform`.
 - `src/settle.ts` — when a page counts as still. `src/steps.ts` — performing a step,

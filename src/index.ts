@@ -22,6 +22,7 @@ export type {
 } from './flow.js';
 export { defineFlow } from './flow.js';
 export type {
+  CheckResult,
   ExportedFile,
   ExportResult,
   FailureResult,
@@ -32,5 +33,5 @@ export type {
   UnsettledStep,
 } from './report.js';
 export type { ExportOptions, RunOptions, SnapOptions } from './run.js';
-export { exportShots, listFlows, run, snap, stop } from './run.js';
+export { check, exportShots, listFlows, run, snap, stop } from './run.js';
 export type { Target } from './targets.js';

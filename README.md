@@ -350,6 +350,7 @@ shotta list [target…]      the catalog: each flow, what it shows, its routes a
 shotta snap <route…>       screenshot routes without writing a flow
 shotta snap --steps <src>  run steps given as JSON: a file, - for stdin, or the JSON itself
 shotta export [name…]      write the configured exports
+shotta check               say what is wrong with the config, the flows and the exports
 shotta stop                stop the app an earlier run left up
 
   --near <path>       only the flows closest to this source file or directory
@@ -380,6 +381,26 @@ is left alone, and the app `shotta` is keeping up is still found and used. Since
 A failed pass never stops the others: narrow profiles are expected to find real
 breakage, and the list of what broke where is the point of the run. Exit code is `0`
 when every pass succeeded, `1` when any failed, `2` when the run could not start.
+
+### check
+
+`shotta check` reads the config, loads every flow and looks up every export, and says
+what a run would refuse to start over — all of it at once, not only the first:
+
+```
+✗ src/cart/cart.shots.ts: steps[1]: not a step: {"clik":"#save"} (have: goto, click, …)
+✗ src/admin/admin.shots.ts: admin: unknown profile: tablt (have: desktop, phone)
+✗ exports.docs: checkout has no shot called paid (have: cart, ready-to-pay)
+3 problems
+```
+
+It starts no browser and no app, so it takes a moment, and exits `0` when nothing is
+wrong and `1` otherwise; `--json` prints `{ ok, flows, shots, exports, problems }`.
+This is the way to validate a flow after writing or changing one. A TypeScript
+compiler is not: flows are loaded by Node as they are, not compiled, and `tsc` run on
+a flow file by hand knows nothing of the project's own steps unless it is given the
+project's whole configuration. What `check` cannot know is whether a selector matches
+anything, which takes the app: run the flow for that.
 
 ### snap
 
@@ -512,7 +533,7 @@ full-size shots, storyboard and video for a person.
 ## From code
 
 ```ts
-import { exportShots, listFlows, run, snap, stop } from 'shotta';
+import { check, exportShots, listFlows, run, snap, stop } from 'shotta';
 
 const result = await run({ targets: ['checkout/cart@phone'] });
 const look = await snap({ paths: ['/cart'], agent: true });
@@ -536,4 +557,6 @@ Put something like this in the project's `AGENTS.md`:
 > `consoleErrors`) before changing anything. When you are done, run the same targets
 > without `--agent` and give the user the storyboard and video paths. A screen's
 > change ships with its flow: add or update `<name>.shots.ts` beside it, with a
-> `shows` line on the flow and on each shot.
+> `shows` line on the flow and on each shot. After writing or changing a flow or the
+> config, run `pnpm shotta check`: it says everything that is wrong with them in a
+> moment, with no browser. Do not run `tsc` on a flow to validate it.

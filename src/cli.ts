@@ -6,7 +6,7 @@ import { text } from 'node:stream/consumers';
 import { parseArgs } from 'node:util';
 
 import type { RunResult } from './report.js';
-import { exportShots, listFlows, run, snap, stop } from './run.js';
+import { check, exportShots, listFlows, run, snap, stop } from './run.js';
 
 const HELP = `shotta [run] [target…]     run flows: all of them, or the targets
 shotta list [target…]      the catalog: each flow, what it shows, its routes and shots
@@ -14,6 +14,8 @@ shotta snap <route…>       screenshot routes without writing a flow
 shotta snap --steps <src>  run steps given as JSON: a file, - for stdin, or the JSON itself
 shotta export [name…]      write the configured exports: named shots, at a set
                            scale, under stable file names
+shotta check               say what is wrong with the config, the flows and the
+                           exports, without a browser or the app
 shotta stop                stop the app an earlier run left up
 
 A target is flow, flow/shot, flow@profile or flow/shot@profile. A flow part
@@ -47,7 +49,7 @@ written beside them under runs/.
 Exits 0 when every pass succeeded, 1 when any failed, 2 when the run could not start.
 Requires: playwright install chromium-headless-shell`;
 
-const COMMANDS = ['run', 'list', 'snap', 'export', 'stop'] as const;
+const COMMANDS = ['run', 'list', 'snap', 'export', 'check', 'stop'] as const;
 type Command = (typeof COMMANDS)[number];
 
 const { values, positionals } = parseArgs({
@@ -175,6 +177,28 @@ try {
       (await stop(common)) ? 'stopped the app' : 'no app was running',
     );
     process.exit(0);
+  }
+
+  if (command === 'check') {
+    const result = await check(common);
+    if (json) {
+      console.log(JSON.stringify(result, null, 2));
+    } else {
+      for (const { file, message } of result.problems) {
+        const where = file === null ? '' : `${path.relative('.', file)}: `;
+        console.error(`✗ ${where}${message}`);
+      }
+      const count = (n: number, one: string): string =>
+        `${n} ${one}${n === 1 ? '' : 's'}`;
+      if (result.ok) {
+        console.log(
+          `✓ ${count(result.flows, 'flow')}, ${count(result.shots, 'shot')}, ${count(result.exports, 'export')}`,
+        );
+      } else {
+        console.error(count(result.problems.length, 'problem'));
+      }
+    }
+    process.exit(result.ok ? 0 : 1);
   }
 
   if (command === 'export') {
