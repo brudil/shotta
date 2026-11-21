@@ -107,11 +107,17 @@ export async function perform(
       await travel(page, ctx, await centreOf(page, step.hover));
     else await page.locator(step.hover).first().hover();
   } else if ('type' in step) {
-    const field = page.locator(step.into).first();
-    if (ctx.cursor || ctx.touch) await clickAt(page, ctx, step.into);
-    else await field.click();
-    await field.fill('');
-    await field.pressSequentially(step.type, { delay: step.delay ?? 35 });
+    const delay = step.delay ?? 35;
+    if (step.into === undefined) {
+      // To whatever has the focus: the pointer stays where it is.
+      await page.keyboard.type(step.type, { delay });
+    } else {
+      const field = page.locator(step.into).first();
+      if (ctx.cursor || ctx.touch) await clickAt(page, ctx, step.into);
+      else await field.click();
+      await field.fill('');
+      await field.pressSequentially(step.type, { delay });
+    }
   } else if ('scroll' in step) {
     if (typeof step.scroll === 'number') await page.mouse.wheel(0, step.scroll);
     else await page.locator(step.scroll).first().scrollIntoViewIfNeeded();

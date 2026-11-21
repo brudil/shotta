@@ -37,8 +37,13 @@ export type BuiltinStep =
   | { goto: string }
   | { click: Selector }
   | { hover: Selector }
-  /** Type `type` into `into`, one key at a time. */
-  | { type: string; into: Selector; delay?: number }
+  /**
+   * Type `type` into `into`, one key at a time, clearing it first. With no
+   * `into`, the keys go to whatever has the focus, and nothing is cleared or
+   * clicked: for a field the app focuses by itself, such as a search that a
+   * shortcut opens.
+   */
+  | { type: string; into?: Selector; delay?: number }
   /** A selector scrolls that element into view; a number scrolls by that many pixels. */
   | { scroll: Selector | number }
   | { press: string }
@@ -196,7 +201,9 @@ export function describeStep(step: ActionStep): string {
   if ('click' in step) return `click ${step.click}`;
   if ('hover' in step) return `hover ${step.hover}`;
   if ('type' in step)
-    return `type ${JSON.stringify(step.type)} into ${step.into}`;
+    return step.into === undefined
+      ? `type ${JSON.stringify(step.type)}`
+      : `type ${JSON.stringify(step.type)} into ${step.into}`;
   if ('scroll' in step) return `scroll ${step.scroll}`;
   if ('press' in step) return `press ${step.press}`;
   if ('wait' in step) return `wait ${step.wait}`;
@@ -260,8 +267,11 @@ function checkAction(step: unknown, at: string, custom: string[]): void {
       break;
     case 'type':
       expect(typeof value === 'string', 'the text to type');
-      if (typeof step.into !== 'string' || step.into === '') {
-        throw new Error(`${at}: type needs "into", the field's selector`);
+      if (
+        step.into !== undefined &&
+        (typeof step.into !== 'string' || step.into === '')
+      ) {
+        throw new Error(`${at}: into takes the field's selector`);
       }
       if (step.delay !== undefined && typeof step.delay !== 'number') {
         throw new Error(`${at}: delay takes a number of ms`);

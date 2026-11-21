@@ -99,9 +99,14 @@ describe('checkSteps', () => {
     );
   });
 
-  it('requires a field to type into', () => {
-    expect(() => checkSteps([{ type: 'Ada' }])).toThrow(
-      'steps[0]: type needs "into", the field\'s selector',
+  it('types into a field, or into whatever has the focus', () => {
+    expect(() => checkSteps([{ type: 'rounding' }])).not.toThrow();
+    expect(describeStep({ type: 'rounding' })).toBe('type "rounding"');
+  });
+
+  it('takes a selector for the field to type into', () => {
+    expect(() => checkSteps([{ type: 'Ada', into: '' }])).toThrow(
+      "steps[0]: into takes the field's selector",
     );
   });
 
