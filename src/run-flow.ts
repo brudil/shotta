@@ -14,7 +14,7 @@ import { describeStep, type Flow, hasMotion, walk } from './flow.js';
 import { installOverlays, setAnnotation, takePress } from './overlays.js';
 import { Recorder } from './recorder.js';
 import type { PassResult } from './report.js';
-import { capture, settle, trackNetwork } from './settle.js';
+import { capture, settle, trackNetwork, watchForChange } from './settle.js';
 import { perform, type StepContext } from './steps.js';
 import { Storyboard, writeStoryboard } from './storyboard.js';
 import { writeTiles } from './tiles.js';
@@ -150,6 +150,7 @@ export async function runFlow(
       hide: config.hide,
       touch: profile.hasTouch,
     });
+    await context.addInitScript(watchForChange);
     page = await context.newPage();
     page.on('pageerror', (error) => noteConsoleError(error.message));
     page.on('console', (message) => {

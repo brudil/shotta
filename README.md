@@ -137,8 +137,11 @@ journey this way rather than leaving a reviewer to guess.
 
 After every step the runner waits for the page to settle: fonts and images loaded,
 nothing `aria-busy`, no finite animation running, the network quiet, and before a
-shot, successive frames identical (which covers canvas). So a numeric `wait` should not
-be needed; if a flow needs one, something is busy that settling cannot see.
+shot, the picture still. A page whose DOM has not changed and that has not scrolled
+for a moment is known to be still; one with a canvas, video, iframe or SVG animation
+on it, or that script is still rewriting, is watched frame by frame until successive
+frames are identical. So a numeric `wait` should not be needed; if a flow needs one,
+something is busy that settling cannot see.
 
 Sockets and event streams (`WebSocket`, `EventSource`) are never waited for. Anything
 else that stays in flight holds a step for twenty seconds before the flow carries on
