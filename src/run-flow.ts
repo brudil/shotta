@@ -276,7 +276,11 @@ export async function runFlow(
       }
       log(`  ${String(at.step).padStart(2, '0')} ${at.action}`);
       await perform(page, step, ctx);
-      const waitingOn = await settle(page, network, { inert: 'shot' in step });
+      // A shot or a wait does nothing to the page: if it is already quiet,
+      // one look says so, and if it is not, it is waited for as after any step.
+      const waitingOn = await settle(page, network, {
+        inert: 'shot' in step || 'wait' in step,
+      });
       if (waitingOn !== null) {
         log(`     · the page never went quiet (${waitingOn.join(', ')})`);
         result.unsettled.push({

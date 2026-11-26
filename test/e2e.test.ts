@@ -665,6 +665,16 @@ describe('shotta export', () => {
 
     // Shot in scratch output of its own, not over anyone's review or agent files.
     expect(relative(result.runs[0]?.outDir ?? '')).toBe('export');
+
+    // One run per export, but exports at the same scale share it, and a flow
+    // both take shots from runs once in it.
+    const [docs, hero, web] = result.runs;
+    expect(result.runs).toHaveLength(3);
+    expect(hero).toEqual(web);
+    expect(docs?.startedAt).not.toBe(hero?.startedAt);
+    expect(
+      hero?.passes.map((pass) => `${pass.flow}@${pass.profile}`).sort(),
+    ).toEqual(['still@desktop', 'still@phone']);
   });
 
   it('writes only the exports named', () => {

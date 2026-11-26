@@ -314,7 +314,9 @@ environment.
 Passes that are not being recorded run several at once, each in its own browser
 context — its own cookies, storage and service workers — against the one app. That is
 safe when a pass's state lives in the browser (mocked APIs, local storage). If passes
-write to a shared backend, set `workers: 1`. Recorded passes always run alone, after
+write to a shared backend, set `workers: 1`. The passes that took longest last time
+start first, so the run does not end on one long pass with the other workers idle;
+the report keeps them in the planned order all the same. Recorded passes always run alone, after
 the others: a recording is only as smooth as the machine is idle.
 
 ## Exports
@@ -360,7 +362,9 @@ shotta export site     # one
 A shot of one element (`of`) or of the viewport (`viewport: true`) is usually what an
 export wants, rather than a whole page. Flows run only as far as the shots asked
 for, without video or storyboard, in scratch output of their own
-(`.shotta/export/`), so an export never disturbs what anyone last looked at. If a
+(`.shotta/export/`), so an export never disturbs what anyone last looked at.
+Exports shot at the same scale share one run, so a flow that several of them take
+shots from runs once. If a
 shot cannot be taken, the file already in `dir` is left as it is, the address is
 listed under `missing`, and the command exits `1`.
 
