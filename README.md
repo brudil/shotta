@@ -21,6 +21,10 @@ pnpm exec playwright install chromium-headless-shell
 Node 22.18 or later, Playwright 1.59 or later. Flows and the config are TypeScript files that Node loads
 directly, so they must use erasable syntax only (no enums, no parameter properties).
 
+Videos are written by the ffmpeg that the project's Playwright installs beside its
+browsers (`playwright install ffmpeg` if it is missing), as VP9 WebM, or VP8 where
+that ffmpeg has only VP8.
+
 `shotta.config.ts`, in the project root or in `.config/`:
 
 ```ts
