@@ -7,7 +7,8 @@
  * overlays are hidden for that, and would otherwise blink in the video.
  */
 import { type ChildProcess, execFile, spawn } from 'node:child_process';
-import { access, readdir } from 'node:fs/promises';
+import { access, readdir, readFile } from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -35,6 +36,56 @@ function browsersDir(): string {
 }
 
 /**
+ * The ffmpeg revisions the project's own Playwright installs, the one it uses
+ * first: the browsers directory is shared by every Playwright on the machine,
+ * and another project's may have put a newer ffmpeg beside it. Empty when
+ * that cannot be read, which leaves the choice to what is installed.
+ */
+async function wantedRevisions(): Promise<string[]> {
+  try {
+    // The Playwright the run drives, the project's own: it is a peer dependency.
+    const playwright = createRequire(import.meta.url).resolve('playwright');
+    const core = createRequire(playwright).resolve(
+      'playwright-core/package.json',
+    );
+    const { browsers } = JSON.parse(
+      await readFile(path.join(path.dirname(core), 'browsers.json'), 'utf8'),
+    ) as {
+      browsers: {
+        name: string;
+        revision: string;
+        revisionOverrides?: Record<string, string>;
+      }[];
+    };
+    const ffmpeg = browsers.find((browser) => browser.name === 'ffmpeg');
+    if (ffmpeg === undefined) return [];
+    // An override is for an older OS, where only that revision is installed.
+    return [ffmpeg.revision, ...Object.values(ffmpeg.revisionOverrides ?? {})];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * The installed `ffmpeg-<revision>` directories to try, best first: the
+ * revisions the project's Playwright asks for, in its order, then the rest,
+ * newest first.
+ */
+export function ffmpegCandidates(
+  installed: string[],
+  wanted: string[],
+): string[] {
+  const revisions = installed
+    .filter((entry) => /^ffmpeg-\d+$/.test(entry))
+    .map((entry) => entry.slice('ffmpeg-'.length))
+    .sort((a, b) => Number(b) - Number(a));
+  return [
+    ...wanted.filter((revision) => revisions.includes(revision)),
+    ...revisions.filter((revision) => !wanted.includes(revision)),
+  ].map((revision) => `ffmpeg-${revision}`);
+}
+
+/**
  * Playwright installs an ffmpeg with its browsers, so recording needs no new
  * dependency. Falls back to one on PATH.
  */
@@ -45,18 +96,15 @@ async function findFfmpeg(): Promise<string> {
       : process.platform === 'win32'
         ? 'ffmpeg-win64.exe'
         : 'ffmpeg-linux';
-  try {
-    const entries = await readdir(browsersDir());
-    // Several revisions can sit side by side; the newest is the one in use.
-    const revisions = entries.filter((e) => e.startsWith('ffmpeg-')).sort();
-    const newest = revisions.at(-1);
-    if (newest !== undefined) {
-      const candidate = path.join(browsersDir(), newest, name);
+  const installed = await readdir(browsersDir()).catch(() => [] as string[]);
+  for (const dir of ffmpegCandidates(installed, await wantedRevisions())) {
+    const candidate = path.join(browsersDir(), dir, name);
+    try {
       await access(candidate);
       return candidate;
+    } catch {
+      // Half installed; try the next.
     }
-  } catch {
-    // Not installed there; try the PATH.
   }
   try {
     await promisify(execFile)('ffmpeg', ['-version']);
@@ -66,6 +114,56 @@ async function findFfmpeg(): Promise<string> {
       'no ffmpeg to record with: run `playwright install ffmpeg`, or pass --no-video',
     );
   }
+}
+
+export type Codec = 'vp9' | 'vp8';
+
+/**
+ * Which WebM codec an ffmpeg can write, from its `-encoders` listing: VP9 where
+ * it has it, VP8 otherwise. Playwright's own builds carry one or the other.
+ */
+export function codecFrom(encoders: string): Codec | null {
+  const has = (name: string): boolean =>
+    new RegExp(`^\\s*V\\S*\\s+${name}\\s`, 'm').test(encoders);
+  if (has('libvpx-vp9')) return 'vp9';
+  if (has('libvpx')) return 'vp8';
+  return null;
+}
+
+/** The encoder's arguments for each codec, as tuned against real recordings. */
+const ENCODE: Record<Codec, string> = {
+  // VP9 at the realtime deadline keeps up with the frames as they arrive, eight
+  // times over at 1440x1000, in a third of VP8's file and 3dB better.
+  vp9: '-c:v libvpx-vp9 -crf 10 -b:v 2M -deadline realtime -cpu-used 6 -lag-in-frames 0 -row-mt 1 -threads 4',
+  // VP8 needs an explicit bitrate ceiling to honour crf: with `-b:v 0` libvpx
+  // picks its own target and spends the bits at a coarse quantizer, which
+  // costs ~11dB of PSNR against these settings at the same file size.
+  vp8: '-c:v libvpx -crf 10 -b:v 2M -cpu-used 2 -threads 4',
+};
+
+/** The ffmpeg to record with and the codec it writes, found once per process. */
+let encoder: Promise<{ ffmpeg: string; codec: Codec }> | null = null;
+
+function findEncoder(): Promise<{ ffmpeg: string; codec: Codec }> {
+  encoder ??= (async () => {
+    const ffmpeg = await findFfmpeg();
+    const { stdout } = await promisify(execFile)(ffmpeg, [
+      '-hide_banner',
+      '-encoders',
+    ]);
+    const codec = codecFrom(stdout);
+    if (codec === null) {
+      throw new Error(
+        `${ffmpeg} can write neither VP9 nor VP8: run \`playwright install ffmpeg\`, or pass --no-video`,
+      );
+    }
+    return { ffmpeg, codec };
+  })();
+  // A failure is reported by the pass that met it; the next may try again.
+  encoder.catch(() => {
+    encoder = null;
+  });
+  return encoder;
 }
 
 /**
@@ -135,11 +233,9 @@ export class Recorder {
     size: { width: number; height: number },
   ): Promise<Recorder> {
     const { width, height } = size;
-    // VP8 needs an explicit bitrate ceiling to honour crf: with `-b:v 0` libvpx
-    // picks its own target and spends the bits at a coarse quantizer, which
-    // costs ~11dB of PSNR against these settings at the same file size.
+    const { ffmpeg: binary, codec } = await findEncoder();
     const ffmpeg = spawn(
-      await findFfmpeg(),
+      binary,
       [
         ...'-loglevel error -f image2pipe -avioflags direct -fpsprobesize 0'.split(
           ' ',
@@ -147,9 +243,9 @@ export class Recorder {
         ...'-probesize 32 -analyzeduration 0 -c:v mjpeg -i pipe:0 -y -an'.split(
           ' ',
         ),
-        ...`-r ${FPS} -c:v libvpx -crf 10 -b:v 2M -cpu-used 2 -threads 4`.split(
-          ' ',
-        ),
+        '-r',
+        String(FPS),
+        ...ENCODE[codec].split(' '),
         '-vf',
         `pad=${width}:${height}:0:0:gray,crop=${width}:${height}:0:0`,
         file,

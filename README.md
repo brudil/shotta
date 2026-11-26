@@ -21,6 +21,10 @@ pnpm exec playwright install chromium-headless-shell
 Node 22.18 or later, Playwright 1.59 or later. Flows and the config are TypeScript files that Node loads
 directly, so they must use erasable syntax only (no enums, no parameter properties).
 
+Videos are written by the ffmpeg that the project's Playwright installs beside its
+browsers (`playwright install ffmpeg` if it is missing), as VP9 WebM, or VP8 where
+that ffmpeg has only VP8.
+
 `shotta.config.ts`, in the project root or in `.config/`:
 
 ```ts
@@ -137,8 +141,11 @@ journey this way rather than leaving a reviewer to guess.
 
 After every step the runner waits for the page to settle: fonts and images loaded,
 nothing `aria-busy`, no finite animation running, the network quiet, and before a
-shot, successive frames identical (which covers canvas). So a numeric `wait` should not
-be needed; if a flow needs one, something is busy that settling cannot see.
+shot, the picture still. A page whose DOM has not changed and that has not scrolled
+for a moment is known to be still; one with a canvas, video, iframe or SVG animation
+on it, or that script is still rewriting, is watched frame by frame until successive
+frames are identical. So a numeric `wait` should not be needed; if a flow needs one,
+something is busy that settling cannot see.
 
 Sockets and event streams (`WebSocket`, `EventSource`) are never waited for. Anything
 else that stays in flight holds a step for twenty seconds before the flow carries on
@@ -250,6 +257,7 @@ with `--config`. Paths in it are relative to the directory `shotta` runs in.
 | `failWhen`       | `[]`                        | `{ selector, message? }` conditions checked after every step — e.g. the app's error boundary.                                                                                                         |
 | `steps`          | `{}`                        | Steps of the project's own, as name → `(page, value) => Promise<void>`. Needs a `.ts` or `.js` config.                                                                                                |
 | `setup`          | —                           | `(page, { baseUrl, profile }) => Promise<void>`, run once per pass before its first step — see below. Needs a `.ts` or `.js` config.                                                                  |
+| `shareSetup`     | `false`                     | Run `setup` once per profile in a run, and start every pass from the cookies and storage it left — see below.                                                                                         |
 | `exports`        | `{}`                        | Named sets of shots for `shotta export` — see below.                                                                                                                                                  |
 
 ### Signing in
@@ -274,6 +282,14 @@ export default defineConfig({
 
 A cookie or a header does as well: `page.context().addCookies([...])`,
 `page.setExtraHTTPHeaders({...})`. If `setup` throws, the pass fails at step `0`.
+
+A sign-in through the app's own pages can take seconds, and every pass pays them.
+With `shareSetup: true` the setup runs once per profile in a run instead, and each
+pass starts in a fresh browser holding the cookies, local storage and IndexedDB it
+left, so passes still cannot see each other's changes. Leave it off for a setup
+whose effect lives anywhere else: session storage, headers set on the page, or state
+on the server that each pass needs afresh. If a shared setup throws, every pass at
+that profile fails at step `0`.
 
 ### The app server
 
@@ -302,7 +318,9 @@ environment.
 Passes that are not being recorded run several at once, each in its own browser
 context — its own cookies, storage and service workers — against the one app. That is
 safe when a pass's state lives in the browser (mocked APIs, local storage). If passes
-write to a shared backend, set `workers: 1`. Recorded passes always run alone, after
+write to a shared backend, set `workers: 1`. The passes that took longest last time
+start first, so the run does not end on one long pass with the other workers idle;
+the report keeps them in the planned order all the same. Recorded passes always run alone, after
 the others: a recording is only as smooth as the machine is idle.
 
 ## Exports
@@ -348,7 +366,9 @@ shotta export site     # one
 A shot of one element (`of`) or of the viewport (`viewport: true`) is usually what an
 export wants, rather than a whole page. Flows run only as far as the shots asked
 for, without video or storyboard, in scratch output of their own
-(`.shotta/export/`), so an export never disturbs what anyone last looked at. If a
+(`.shotta/export/`), so an export never disturbs what anyone last looked at.
+Exports shot at the same scale share one run, so a flow that several of them take
+shots from runs once. If a
 shot cannot be taken, the file already in `dir` is left as it is, the address is
 listed under `missing`, and the command exits `1`.
 

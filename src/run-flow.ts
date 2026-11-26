@@ -9,12 +9,12 @@ import {
   type Page,
 } from 'playwright';
 
-import type { ResolvedConfig, ResolvedProfile } from './config.js';
+import type { ResolvedConfig, ResolvedProfile, Setup } from './config.js';
 import { describeStep, type Flow, hasMotion, walk } from './flow.js';
 import { installOverlays, setAnnotation, takePress } from './overlays.js';
 import { Recorder } from './recorder.js';
 import type { PassResult } from './report.js';
-import { capture, settle, trackNetwork } from './settle.js';
+import { capture, settle, trackNetwork, watchForChange } from './settle.js';
 import { perform, type StepContext } from './steps.js';
 import { Storyboard, writeStoryboard } from './storyboard.js';
 import { writeTiles } from './tiles.js';
@@ -34,6 +34,75 @@ export interface RunFlowOptions {
   profile: ResolvedProfile;
   config: ResolvedConfig;
   log: (msg: string) => void;
+  /**
+   * With `shareSetup`, what the setup left at a profile, made once and shared
+   * by every pass that asks; null for each pass to run the setup itself.
+   */
+  setupState?: ((profile: ResolvedProfile) => Promise<StorageState>) | null;
+}
+
+/** Cookies and storage, as a context saves and is started from. */
+export type StorageState = Awaited<ReturnType<BrowserContext['storageState']>>;
+
+/**
+ * A context set up as every page shotta drives needs it: the profile's
+ * device, the project's page setup and overlays, and the watch on what moves.
+ */
+async function openContext(
+  browser: Browser,
+  profile: ResolvedProfile,
+  config: ResolvedConfig,
+  storageState?: StorageState,
+): Promise<BrowserContext> {
+  const context = await browser.newContext({
+    ...emulationFor(profile),
+    ...(storageState === undefined ? {} : { storageState }),
+  });
+  context.setDefaultTimeout(config.actionTimeout);
+  await context.addInitScript(installOverlays, {
+    localStorage: config.localStorage,
+    hide: config.hide,
+    touch: profile.hasTouch,
+  });
+  await context.addInitScript(watchForChange);
+  return context;
+}
+
+/**
+ * Run the setup once per profile, however many passes ask, and hand each the
+ * cookies and storage (IndexedDB included) it left. A setup that fails fails
+ * every pass at that profile, once.
+ */
+export function sharedSetup(
+  setup: Setup,
+  {
+    browser,
+    baseUrl,
+    config,
+  }: Pick<RunFlowOptions, 'browser' | 'baseUrl' | 'config'>,
+): (profile: ResolvedProfile) => Promise<StorageState> {
+  const made = new Map<string, Promise<StorageState>>();
+  const make = async (profile: ResolvedProfile): Promise<StorageState> => {
+    const context = await openContext(browser, profile, config);
+    try {
+      const page = await context.newPage();
+      await setup(page, {
+        baseUrl: baseUrl.replace(/\/$/, ''),
+        profile: profile.name,
+      });
+      return await context.storageState({ indexedDB: true });
+    } finally {
+      await context.close();
+    }
+  };
+  return (profile) => {
+    let state = made.get(profile.name);
+    if (state === undefined) {
+      state = make(profile);
+      made.set(profile.name, state);
+    }
+    return state;
+  };
 }
 
 /** Playwright colours its call logs for a terminal; a report is not one. */
@@ -93,7 +162,15 @@ export function records(flow: Flow, config: ResolvedConfig): boolean {
  */
 export async function runFlow(
   flow: Flow,
-  { browser, baseUrl, outDir, profile, config, log }: RunFlowOptions,
+  {
+    browser,
+    baseUrl,
+    outDir,
+    profile,
+    config,
+    log,
+    setupState = null,
+  }: RunFlowOptions,
 ): Promise<PassResult> {
   const startedAt = Date.now();
   // Per profile, so one profile's pass does not wipe another's output.
@@ -140,16 +217,17 @@ export async function runFlow(
   const at = { step: 0, action: 'start', chapter: null as string | null };
 
   try {
-    const emulation = emulationFor(profile);
-    viewport = emulation.viewport;
+    viewport = emulationFor(profile).viewport;
+    // Shared, the setup ran once for every pass at this profile, and each
+    // starts from what it left; otherwise each pass runs it for itself.
+    let signedIn: StorageState | undefined;
+    if (setupState !== null) {
+      at.action = 'setup';
+      log('  · setup (shared by the passes at this profile)');
+      signedIn = await setupState(profile);
+    }
     // A fresh context per pass is what resets the app's state between flows.
-    context = await browser.newContext(emulation);
-    context.setDefaultTimeout(config.actionTimeout);
-    await context.addInitScript(installOverlays, {
-      localStorage: config.localStorage,
-      hide: config.hide,
-      touch: profile.hasTouch,
-    });
+    context = await openContext(browser, profile, config, signedIn);
     page = await context.newPage();
     page.on('pageerror', (error) => noteConsoleError(error.message));
     page.on('console', (message) => {
@@ -175,7 +253,7 @@ export async function runFlow(
       mouse: { x: 2, y: 2 },
     };
 
-    if (config.setup !== null) {
+    if (config.setup !== null && setupState === null) {
       at.action = 'setup';
       log('  · setup');
       await config.setup(page, {
@@ -198,7 +276,11 @@ export async function runFlow(
       }
       log(`  ${String(at.step).padStart(2, '0')} ${at.action}`);
       await perform(page, step, ctx);
-      const waitingOn = await settle(page, network, { inert: 'shot' in step });
+      // A shot or a wait does nothing to the page: if it is already quiet,
+      // one look says so, and if it is not, it is waited for as after any step.
+      const waitingOn = await settle(page, network, {
+        inert: 'shot' in step || 'wait' in step,
+      });
       if (waitingOn !== null) {
         log(`     · the page never went quiet (${waitingOn.join(', ')})`);
         result.unsettled.push({

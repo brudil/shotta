@@ -20,6 +20,8 @@ const DEV_SERVER_REQUESTS = /@vite|@fs|@ng|\.hot-update\./;
 
 export interface NetworkTracker {
   quiet: () => boolean;
+  /** When a request last began or ended, in ms. */
+  changedAt: () => number;
   /** The URLs of the requests still in flight. */
   pending: () => string[];
   /**
@@ -88,6 +90,7 @@ export function trackNetwork(
   return {
     quiet: () =>
       inflight.size === 0 && Date.now() - lastChange >= NETWORK_QUIET,
+    changedAt: () => lastChange,
     pending: () => [...inflight.keys()].map((req) => req.url()),
     abandon: (since) => {
       for (const [req, began] of inflight) {
@@ -193,22 +196,15 @@ export async function settle(
 ): Promise<string[] | null> {
   const began = Date.now();
   await page.waitForLoadState('load');
-  // What is keeping the page busy: nothing, or the reasons, or undefined when
-  // the page was navigating and could not be asked.
-  const busy = (): Promise<string[] | undefined> =>
-    acrossNavigation(page, async () => {
-      if (!network.quiet()) {
-        const pending = network.pending();
-        return pending.length === 0
-          ? ['a request that only just finished']
-          : pending.map((url) => `request ${briefUrl(url)}`);
-      }
-      const dom = await domBusy(page);
-      return dom === null ? [] : [dom];
-    });
   // A step that changed nothing has no transition to wait out: one look
   // confirms the page is as quiet as the step before left it.
-  if (inert && (await busy())?.length === 0) return null;
+  if (
+    inert &&
+    network.quiet() &&
+    (await acrossNavigation(page, () => domBusy(page))) === null
+  ) {
+    return null;
+  }
   // A transition triggered by the previous step does not exist yet in the frame
   // that step returned in; give the browser two frames to start it.
   await acrossNavigation(page, () =>
@@ -220,17 +216,35 @@ export async function settle(
     ),
   );
   const deadline = Date.now() + SETTLE_TIMEOUT;
-  let consecutive = 0;
+  // The DOM is watched while the network's quiet window runs, not after it,
+  // so the two waits overlap. When each of the current run of quiet looks
+  // began: only looks taken after the last request ended count, since what a
+  // response did to the page shows only after it lands.
+  let quietLooks: number[] = [];
   let waitingOn: string[] = ['the page, which was navigating'];
   while (Date.now() < deadline) {
-    const reasons = await busy();
-    if (reasons?.length === 0) {
-      consecutive += 1;
-      if (consecutive >= QUIET_POLLS) return null;
-    } else {
-      consecutive = 0;
-      if (reasons !== undefined) waitingOn = reasons;
+    const lookedAt = Date.now();
+    // Undefined while the page is navigating, which is not quiet either.
+    const dom = await acrossNavigation(page, () => domBusy(page));
+    quietLooks =
+      dom === null ? [...quietLooks, lookedAt].slice(-QUIET_POLLS) : [];
+    const since = quietLooks[quietLooks.length - QUIET_POLLS];
+    if (
+      network.quiet() &&
+      since !== undefined &&
+      since >= network.changedAt()
+    ) {
+      return null;
     }
+    const reasons: string[] = [];
+    if (!network.quiet()) {
+      const pending = network.pending();
+      if (pending.length === 0)
+        reasons.push('a request that only just finished');
+      for (const url of pending) reasons.push(`request ${briefUrl(url)}`);
+    }
+    if (typeof dom === 'string') reasons.push(dom);
+    if (reasons.length > 0) waitingOn = reasons;
     await page.waitForTimeout(POLL_MS);
   }
   // What has been in flight all this while has shown itself to be a stream:
@@ -239,13 +253,138 @@ export async function settle(
   return waitingOn;
 }
 
+/** How the page answers whether it has held still: see {@link watchForChange}. */
+type StillWindow = Window & { __shotsQuietFor?: () => number | null };
+
+/**
+ * Runs in the page on every document, before the app: notes when the page
+ * last changed in a way that can move pixels without any of the signals
+ * `settle` reads — the DOM rewritten (an animation driven from script), or
+ * something scrolled or resized. The overlays and shotta's own classes on the
+ * root are not the page.
+ *
+ * `__shotsQuietFor()` then says how long it has been since anything changed,
+ * or null when the page cannot vouch for itself: something on it draws by
+ * itself (a canvas, a video, a frame, SVG animation), which only comparing
+ * frames can see.
+ *
+ * Serialised into the browser, so it can use nothing from this module's scope.
+ */
+export function watchForChange(): void {
+  const OVERLAY =
+    '[data-shots-cursor], [data-shots-annotation], [data-shots-pulse]';
+  // SVG's element names are matched as written, so these must keep their case.
+  const SELF_DRAWN =
+    'canvas, video, iframe, embed, object, animate, animateMotion, animateTransform, set';
+  let changed = performance.now();
+  const roots = new Set<Document | ShadowRoot>();
+
+  const overlay = (node: Node): boolean => {
+    const element = node instanceof Element ? node : node.parentElement;
+    return element?.closest(OVERLAY) != null;
+  };
+  const ownClasses = (value: string | null): string =>
+    (value ?? '')
+      .split(/\s+/)
+      .filter((name) => name !== '' && !name.startsWith('shots-'))
+      .join(' ');
+  const matters = (record: MutationRecord): boolean => {
+    if (record.type === 'attributes') {
+      if (overlay(record.target)) return false;
+      const target = record.target as Element;
+      if (
+        target === document.documentElement &&
+        record.attributeName === 'class'
+      ) {
+        return (
+          ownClasses(record.oldValue) !==
+          ownClasses(target.getAttribute('class'))
+        );
+      }
+      return true;
+    }
+    if (record.type === 'characterData') return !overlay(record.target);
+    const nodes = [...record.addedNodes, ...record.removedNodes];
+    return nodes.length > 0 && !nodes.every(overlay);
+  };
+  const observer = new MutationObserver((records) => {
+    if (records.some(matters)) changed = performance.now();
+  });
+  const watch = (root: Document | ShadowRoot): void => {
+    roots.add(root);
+    observer.observe(root, {
+      subtree: true,
+      childList: true,
+      attributes: true,
+      attributeOldValue: true,
+      characterData: true,
+    });
+  };
+  watch(document);
+  // A shadow root's insides are out of a document observer's sight, so each
+  // one is watched as it is made.
+  const attach = Element.prototype.attachShadow;
+  Element.prototype.attachShadow = function (
+    this: Element,
+    init: ShadowRootInit,
+  ): ShadowRoot {
+    const root = attach.call(this, init);
+    watch(root);
+    return root;
+  };
+  // The parser makes a declarative one without that call: it is found when
+  // asked, and having gone unwatched until then, it cannot vouch for itself.
+  const unwatched = (): boolean => {
+    let found = false;
+    for (const root of [...roots]) {
+      for (const element of root.querySelectorAll('*')) {
+        const inner = element.shadowRoot;
+        if (inner !== null && !roots.has(inner)) {
+          watch(inner);
+          found = true;
+        }
+      }
+    }
+    return found;
+  };
+  const moved = (): void => {
+    changed = performance.now();
+  };
+  // Scrolling moves pixels without touching the DOM: a smooth scroll is an
+  // animation that no other signal sees.
+  addEventListener('scroll', moved, { capture: true, passive: true });
+  addEventListener('resize', moved, { passive: true });
+
+  (window as StillWindow).__shotsQuietFor = () => {
+    if (unwatched()) return null;
+    for (const root of roots) {
+      if (root.querySelector(SELF_DRAWN) !== null) return null;
+    }
+    return performance.now() - changed;
+  };
+}
+
 /**
  * Wait until successive viewport frames stop changing. Canvas views (maps,
- * charts) are invisible to every DOM signal, so compare pixels. The caller must
- * have frozen the overlays first, or the cursor's own transition counts as
- * change.
+ * charts) and animations driven from script are invisible to every DOM signal
+ * `settle` reads, so compare pixels — unless the page can say it has held
+ * still for as long as the comparison would take, and has nothing that draws
+ * by itself. The caller must have frozen the overlays first, or the cursor's
+ * own transition counts as change.
  */
 async function settlePixels(page: Page): Promise<void> {
+  // As long as the frame comparison would want frames to stay the same.
+  const enough = PIXEL_STABLE_FRAMES * POLL_MS;
+  const quietFor = (): Promise<number | null> =>
+    page.evaluate(() => (window as StillWindow).__shotsQuietFor?.() ?? null);
+  let quiet = await quietFor();
+  if (quiet !== null && quiet < enough) {
+    // Often only the shot before has just scrolled or resized the page:
+    // waiting out the rest is cheaper than comparing frames for as long.
+    await page.waitForTimeout(enough - quiet);
+    quiet = await quietFor();
+  }
+  if (quiet !== null && quiet >= enough) return;
   const deadline = Date.now() + PIXEL_TIMEOUT;
   let previous: Buffer | null = null;
   let stable = 0;

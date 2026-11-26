@@ -3,6 +3,7 @@ import {
   copyFile,
   mkdir,
   readdir,
+  readFile,
   rm,
   stat,
   writeFile,
@@ -36,7 +37,7 @@ import type {
   PassResult,
   RunResult,
 } from './report.js';
-import { records, runFlow } from './run-flow.js';
+import { records, runFlow, sharedSetup } from './run-flow.js';
 import {
   ensureServer,
   type RunningServer,
@@ -232,6 +233,41 @@ async function pool<T>(
   );
 }
 
+/** Reports read for how long each pass took last time. */
+const REPORTS_CONSULTED = 5;
+
+/**
+ * How long each flow took at each profile, by `flow@profile`, as the newest
+ * reports in these directories have it: the first directory with any. A report
+ * that cannot be read is passed over, since this only orders the work.
+ */
+async function lastDurations(dirs: string[]): Promise<Map<string, number>> {
+  const took = new Map<string, number>();
+  for (const dir of dirs) {
+    const reports = await readdir(dir).catch(() => [] as string[]);
+    const newest = reports
+      .filter((file) => file.endsWith('.json'))
+      .sort()
+      .reverse()
+      .slice(0, REPORTS_CONSULTED);
+    for (const file of newest) {
+      try {
+        const report = JSON.parse(
+          await readFile(path.join(dir, file), 'utf8'),
+        ) as RunResult;
+        for (const pass of report.passes) {
+          const key = `${pass.flow}@${pass.profile}`;
+          if (!took.has(key)) took.set(key, pass.durationMs);
+        }
+      } catch {
+        // Unreadable, or from a version that wrote another shape.
+      }
+    }
+    if (took.size > 0) break;
+  }
+  return took;
+}
+
 async function writeReport(result: RunResult, id: string): Promise<void> {
   const dir = path.dirname(result.report);
   await mkdir(dir, { recursive: true });
@@ -265,6 +301,8 @@ async function execute(
   config: ResolvedConfig,
   passes: Pass[],
   options: CommonOptions,
+  /** One to use and leave open, instead of launching and closing its own. */
+  given?: Browser,
 ): Promise<RunResult> {
   const log = options.log ?? (() => {});
   const startedAt = new Date();
@@ -274,7 +312,9 @@ async function execute(
 
   // Before the app: a machine without the browser should say so at once, not
   // after waiting for a server it then has no use for.
-  const browser = await launchBrowser(options.headed === true);
+  const browser = given ?? (await launchBrowser(options.headed === true));
+  const closeBrowser = (): Promise<void> =>
+    given === undefined ? browser.close() : Promise.resolve();
   let server: RunningServer;
   try {
     if (config.baseUrl !== null) {
@@ -296,7 +336,7 @@ async function execute(
       );
     }
   } catch (error) {
-    await browser.close();
+    await closeBrowser();
     throw error;
   }
 
@@ -306,6 +346,24 @@ async function execute(
   const recorded = passes.filter(({ flow }) => records(flow, config));
   const workers = options.headed ? 1 : config.workers;
   const together = workers > 1 && quiet.length > 1;
+  if (together) {
+    // Side by side, the longest go first, so none is left running alone at
+    // the end while the other workers wait. A pass never timed goes first.
+    const took = await lastDurations([
+      path.join(outDir, 'runs'),
+      path.resolve(cwd, config.stateDir, config.root, 'runs'),
+    ]);
+    const longest = (pass: Pass): number =>
+      took.get(`${pass.flow.name}@${pass.profile.name}`) ??
+      Number.POSITIVE_INFINITY;
+    // Stable, so passes timed alike, or not at all, keep their planned order.
+    quiet.sort((a, b) => longest(b) - longest(a) || 0);
+  }
+
+  const setupState =
+    config.shareSetup && config.setup !== null
+      ? sharedSetup(config.setup, { browser, baseUrl: server.baseUrl, config })
+      : null;
 
   const results = new Map<Pass, PassResult>();
   try {
@@ -323,6 +381,7 @@ async function execute(
           profile: pass.profile,
           config,
           log: say,
+          setupState,
         });
         for (const shot of result.shots) {
           say(`  → ${path.relative(cwd, shot.file)}`);
@@ -342,7 +401,7 @@ async function execute(
       await pool(quiet, workers, (pass) => runPass(pass, !together));
       for (const pass of recorded) await runPass(pass, true);
     } finally {
-      await browser.close();
+      await closeBrowser();
     }
   } finally {
     await server.stop();
@@ -604,15 +663,32 @@ export async function exportShots(
   }
 
   const result: ExportResult = { ok: true, files: [], missing: [], runs: [] };
-  for (const name of names) {
-    const entry = base.exports.find(
-      (e) => e.name === name,
-    ) as (typeof base.exports)[number];
+  const entries = names.map(
+    (name) =>
+      base.exports.find(
+        (e) => e.name === name,
+      ) as (typeof base.exports)[number],
+  );
+  // Exports shot at the same scale are one run: a flow two of them take
+  // shots from is run once, as far as the furthest shot either asks for.
+  const groups = new Map<number | undefined, typeof entries>();
+  for (const entry of entries) {
+    const scale = entry.scale ?? options.scale;
+    groups.set(scale, [...(groups.get(scale) ?? []), entry]);
+  }
+  // Kept per export, to be reported in the order the exports were asked for.
+  const runOf = new Map<string, RunResult>();
+  const filesOf = new Map<string, ExportedFile[]>();
+  const missingOf = new Map<string, ExportResult['missing']>();
+
+  // Everything that can be wrong with the request is, before a browser opens.
+  const planned = [];
+  for (const [scale, group] of groups) {
     const resolved = await configure({
       ...options,
       agent: false,
       video: false,
-      scale: entry.scale ?? options.scale,
+      scale,
     });
     const { cwd } = resolved;
     const config: ResolvedConfig = {
@@ -620,64 +696,87 @@ export async function exportShots(
       storyboard: false,
       root: 'export',
     };
-
     const { flows } = await select(cwd, config, {
-      targets: entry.shots.map((shot) => shot.address),
+      targets: group.flatMap((entry) =>
+        entry.shots.map((shot) => shot.address),
+      ),
     });
-    // Everything that can be wrong with the request is, before a browser opens.
-    const { passes, wanted } = planExport(entry, flows, config);
-
-    log(`▷ export ${name} → ${entry.dir}`);
-    const run = await execute(cwd, config, passes, options);
-    result.runs.push(run);
-    const dir = path.resolve(cwd, entry.dir);
-    await mkdir(dir, { recursive: true });
-    const encode: EncodeJob[] = [];
-    for (const { flow, shot, profiles, file } of wanted) {
-      for (const profile of profiles) {
-        const address = `${flow}/${shot}@${profile}`;
-        const taken = run.passes
-          .find((pass) => pass.flow === flow && pass.profile === profile)
-          ?.shots.find((candidate) => candidate.name === shot);
-        if (taken === undefined) {
-          result.missing.push({ export: name, address });
-          continue;
-        }
-        // A file's own name says what it is; the list form's all share one.
-        const format =
-          file === null ? entry.format : (formatOf(file) ?? entry.format);
-        const written: ExportedFile = {
-          export: name,
-          address,
-          file: path.join(
-            dir,
-            file ?? `${flow}.${shot}.${profile}.${EXTENSION[format]}`,
-          ),
-        };
-        if (format === 'png') {
-          await copyFile(taken.file, written.file);
-        } else {
-          encode.push({
-            from: taken.file,
-            to: written.file,
-            format,
-            quality: entry.quality,
-          });
-        }
-        result.files.push(written);
-        log(`  → ${path.relative(cwd, written.file)}`);
-      }
-    }
-    if (encode.length > 0) {
-      // The shots are PNGs; the browser that took them writes the rest.
-      const browser = await launchBrowser(false);
-      try {
-        await encodeImages(browser, encode);
-      } finally {
-        await browser.close();
-      }
-    }
+    const plans = group.map((entry) => ({
+      entry,
+      wanted: planExport(entry, flows, config).wanted,
+    }));
+    const passes = planPasses(
+      flows,
+      config,
+      group.flatMap((entry) => entry.shots.map((shot) => shot.target)),
+    );
+    planned.push({ cwd, config, group, plans, passes });
   }
+
+  // One browser for every run and for the encoding after each.
+  const browser = await launchBrowser(options.headed === true);
+  try {
+    for (const { cwd, config, group, plans, passes } of planned) {
+      for (const entry of group) log(`▷ export ${entry.name} → ${entry.dir}`);
+      const run = await execute(cwd, config, passes, options, browser);
+      for (const entry of group) runOf.set(entry.name, run);
+
+      // Written before the next scale's run shoots over the scratch output.
+      const encode: EncodeJob[] = [];
+      for (const { entry, wanted } of plans) {
+        const files: ExportedFile[] = [];
+        const missing: ExportResult['missing'] = [];
+        filesOf.set(entry.name, files);
+        missingOf.set(entry.name, missing);
+        const dir = path.resolve(cwd, entry.dir);
+        await mkdir(dir, { recursive: true });
+        for (const { flow, shot, profiles, file } of wanted) {
+          for (const profile of profiles) {
+            const address = `${flow}/${shot}@${profile}`;
+            const taken = run.passes
+              .find((pass) => pass.flow === flow && pass.profile === profile)
+              ?.shots.find((candidate) => candidate.name === shot);
+            if (taken === undefined) {
+              missing.push({ export: entry.name, address });
+              continue;
+            }
+            // A file's own name says what it is; the list form's all share one.
+            const format =
+              file === null ? entry.format : (formatOf(file) ?? entry.format);
+            const written: ExportedFile = {
+              export: entry.name,
+              address,
+              file: path.join(
+                dir,
+                file ?? `${flow}.${shot}.${profile}.${EXTENSION[format]}`,
+              ),
+            };
+            if (format === 'png') {
+              await copyFile(taken.file, written.file);
+            } else {
+              encode.push({
+                from: taken.file,
+                to: written.file,
+                format,
+                quality: entry.quality,
+              });
+            }
+            files.push(written);
+            log(`  → ${path.relative(cwd, written.file)}`);
+          }
+        }
+      }
+      // The shots are PNGs; the browser that took them writes the rest.
+      if (encode.length > 0) await encodeImages(browser, encode);
+    }
+  } finally {
+    await browser.close();
+  }
+  // One per export, in the order asked for: exports that shared a run each
+  // point at it.
+  result.runs = names.map((name) => runOf.get(name) as RunResult);
+  result.files = names.flatMap((name) => filesOf.get(name) ?? []);
+  result.missing = names.flatMap((name) => missingOf.get(name) ?? []);
   result.ok = result.missing.length === 0;
   return result;
 }

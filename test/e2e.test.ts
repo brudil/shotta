@@ -457,6 +457,39 @@ describe('shotta snap', () => {
     expect(sees('phone', 'light')).toBe(1);
   });
 
+  it('signs in once per profile when the setup is shared, and every pass starts signed in', () => {
+    const log = path.join(tmpdir(), `shotta-setup-${process.pid}.log`);
+    rmSync(log, { force: true });
+    const { status, stdout } = spawnSync(
+      'node',
+      [
+        cli,
+        'journey',
+        'still',
+        '--config',
+        'shared.config.mjs',
+        '--no-video',
+        '--tmp',
+        '--json',
+      ],
+      {
+        cwd: fixture,
+        encoding: 'utf8',
+        env: { ...process.env, SETUP_LOG: log },
+      },
+    );
+    const result: RunResult = JSON.parse(stdout);
+    const ran = readFileSync(log, 'utf8').trim().split('\n').sort();
+    rmSync(log, { force: true });
+    rmSync(result.outDir, { recursive: true, force: true });
+
+    expect(status).toBe(0);
+    expect(result.passes).toHaveLength(4);
+    // The journey waits for the cookie the setup set.
+    expect(result.passes.every((pass) => pass.ok)).toBe(true);
+    expect(ran).toEqual(['desktop', 'phone']);
+  });
+
   it('exits 2 on steps that are not steps, saying which', () => {
     const { status, stderr } = shots(
       'snap',
@@ -632,6 +665,16 @@ describe('shotta export', () => {
 
     // Shot in scratch output of its own, not over anyone's review or agent files.
     expect(relative(result.runs[0]?.outDir ?? '')).toBe('export');
+
+    // One run per export, but exports at the same scale share it, and a flow
+    // both take shots from runs once in it.
+    const [docs, hero, web] = result.runs;
+    expect(result.runs).toHaveLength(3);
+    expect(hero).toEqual(web);
+    expect(docs?.startedAt).not.toBe(hero?.startedAt);
+    expect(
+      hero?.passes.map((pass) => `${pass.flow}@${pass.profile}`).sort(),
+    ).toEqual(['still@desktop', 'still@phone']);
   });
 
   it('writes only the exports named', () => {
