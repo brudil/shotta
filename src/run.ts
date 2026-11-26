@@ -36,7 +36,7 @@ import type {
   PassResult,
   RunResult,
 } from './report.js';
-import { records, runFlow } from './run-flow.js';
+import { records, runFlow, sharedSetup } from './run-flow.js';
 import {
   ensureServer,
   type RunningServer,
@@ -307,6 +307,11 @@ async function execute(
   const workers = options.headed ? 1 : config.workers;
   const together = workers > 1 && quiet.length > 1;
 
+  const setupState =
+    config.shareSetup && config.setup !== null
+      ? sharedSetup(config.setup, { browser, baseUrl: server.baseUrl, config })
+      : null;
+
   const results = new Map<Pass, PassResult>();
   try {
     try {
@@ -323,6 +328,7 @@ async function execute(
           profile: pass.profile,
           config,
           log: say,
+          setupState,
         });
         for (const shot of result.shots) {
           say(`  → ${path.relative(cwd, shot.file)}`);

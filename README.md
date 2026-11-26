@@ -253,6 +253,7 @@ with `--config`. Paths in it are relative to the directory `shotta` runs in.
 | `failWhen`       | `[]`                        | `{ selector, message? }` conditions checked after every step — e.g. the app's error boundary.                                                                                                         |
 | `steps`          | `{}`                        | Steps of the project's own, as name → `(page, value) => Promise<void>`. Needs a `.ts` or `.js` config.                                                                                                |
 | `setup`          | —                           | `(page, { baseUrl, profile }) => Promise<void>`, run once per pass before its first step — see below. Needs a `.ts` or `.js` config.                                                                  |
+| `shareSetup`     | `false`                     | Run `setup` once per profile in a run, and start every pass from the cookies and storage it left — see below.                                                                                         |
 | `exports`        | `{}`                        | Named sets of shots for `shotta export` — see below.                                                                                                                                                  |
 
 ### Signing in
@@ -277,6 +278,14 @@ export default defineConfig({
 
 A cookie or a header does as well: `page.context().addCookies([...])`,
 `page.setExtraHTTPHeaders({...})`. If `setup` throws, the pass fails at step `0`.
+
+A sign-in through the app's own pages can take seconds, and every pass pays them.
+With `shareSetup: true` the setup runs once per profile in a run instead, and each
+pass starts in a fresh browser holding the cookies, local storage and IndexedDB it
+left, so passes still cannot see each other's changes. Leave it off for a setup
+whose effect lives anywhere else: session storage, headers set on the page, or state
+on the server that each pass needs afresh. If a shared setup throws, every pass at
+that profile fails at step `0`.
 
 ### The app server
 

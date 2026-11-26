@@ -100,6 +100,19 @@ describe('resolveConfig', () => {
     ).toThrow('setup must be a function');
   });
 
+  it('runs the setup in every pass unless it is shared, which needs one', () => {
+    const setup = async (): Promise<void> => {};
+    const resolve = (file: object) =>
+      resolveConfig({ file, cli: {}, knownDevices: KNOWN_DEVICES });
+
+    expect(resolve({ setup }).shareSetup).toBe(false);
+    expect(resolve({ setup, shareSetup: true }).shareSetup).toBe(true);
+    expect(() => resolve({ shareSetup: true })).toThrow('it needs a setup');
+    expect(() => resolve({ setup, shareSetup: 'yes' })).toThrow(
+      'shareSetup must be true or false',
+    );
+  });
+
   it('leaves a desktop preset on the mouse path', () => {
     const resolved = resolveConfig({
       file: {

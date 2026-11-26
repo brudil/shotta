@@ -163,6 +163,14 @@ export interface ShotsConfig {
    * snap` shoot its routes. A function, so it needs a `.ts` or `.js` config.
    */
   setup?: Setup;
+  /**
+   * Run `setup` once per profile in a run, not once per pass, and start every
+   * pass from the cookies, local storage and IndexedDB it left. For a setup
+   * that signs in through the app's own pages, which costs every pass seconds.
+   * Not for one that puts state anywhere else (session storage, the server)
+   * that each pass needs afresh.
+   */
+  shareSetup?: boolean;
   /** Named sets of shots for `shotta export`. */
   exports?: Record<string, ExportConfig>;
 }
@@ -236,6 +244,7 @@ export interface ResolvedConfig {
   failWhen: FailWhen[];
   steps: AnyStepHandlers;
   setup: Setup | null;
+  shareSetup: boolean;
   exports: ResolvedExport[];
   /** Shots taller than this many image pixels are also cut into tiles; null for never. */
   tileHeight: number | null;
@@ -286,6 +295,7 @@ const KNOWN_KEYS: Record<keyof ShotsConfig, true> = {
   failWhen: true,
   steps: true,
   setup: true,
+  shareSetup: true,
   exports: true,
 };
 
@@ -383,6 +393,12 @@ export function resolveConfig({
   if (file?.setup !== undefined && typeof file.setup !== 'function') {
     throw new Error('setup must be a function');
   }
+  if (file?.shareSetup !== undefined && typeof file.shareSetup !== 'boolean') {
+    throw new Error('shareSetup must be true or false');
+  }
+  if (file?.shareSetup === true && file.setup === undefined) {
+    throw new Error('shareSetup shares the setup, so it needs a setup');
+  }
 
   const profiles = file?.profiles ?? DEFAULT_CONFIG.profiles;
   const names = Object.keys(profiles);
@@ -468,6 +484,7 @@ export function resolveConfig({
     failWhen: file?.failWhen ?? [],
     steps,
     setup: file?.setup ?? null,
+    shareSetup: file?.shareSetup ?? false,
     exports: Object.entries(file?.exports ?? {}).map(resolveExport),
     tileHeight: agent ? AGENT_TILE_HEIGHT : null,
   };
